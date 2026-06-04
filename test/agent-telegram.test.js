@@ -690,6 +690,37 @@ test("dispatch reject callback creates no task or exchange message", async () =>
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 0);
 });
 
+test("dispatch callback from non-owner is denied and does not mutate approval", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-dispatch-denied-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo/agent-river" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const created = createDispatchApproval({
+    agentHome,
+    proposedBy: "opus",
+    proposal: {
+      to: "codex",
+      task: "Implement this denied dispatch callback request.",
+      reason: "Non-owner callbacks must not mutate state.",
+      suggested_mode: "plan",
+    },
+    chatId: "456",
+  });
+  const calls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedFetch(calls, [[telegramCallbackUpdate({ updateId: 35, fromId: 999, chatId: 456, data: `dispatch:approve:${created.approval.id}` })], []]),
+  });
+
+  assert.equal(result.handled[0].reason, "callback_not_allowed");
+  assert.equal(calls.find((call) => call.method === "answerCallbackQuery").body.text, "Not allowed.");
+  assert.equal(listDispatchApprovals(agentHome)[0].status, "pending");
+  assert.equal(fs.existsSync(agentPaths(agentHome).tasksDir), false);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 0);
+});
+
 test("telegram poll acks consumed updates even when sendMessage fails", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-send-failure-");
   allowGatewayUser(agentHome, "123");

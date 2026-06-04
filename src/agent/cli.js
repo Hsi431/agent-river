@@ -38,6 +38,7 @@ import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submit
 import { resolveAgentHome } from "./paths.js";
 import { allowGatewayUser, denyGatewayUser, disableExchangeAgent, enableExchangeAgent, getSafetyStatus, getTelegramCodexPolicy, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "./safety.js";
 import { handleTelegramUpdate, parseTelegramUpdateJson, pollTelegramOnce } from "./telegram.js";
+import { getDispatchApproval, listDispatchApprovals } from "./dispatch.js";
 
 export async function runAgentCli(argv) {
   if (argv[0] === "--help" || argv[0] === "-h") {
@@ -121,6 +122,10 @@ export async function runAgentCli(argv) {
       return printResult(pruneExchangeState({ agentHome, days: requireArg(args, "days") }));
     case "exchange-status":
       return printResult(exchangeStatus(agentHome));
+    case "dispatch-list":
+      return printResult({ dispatches: filterDispatchApprovals(listDispatchApprovals(agentHome), args.status) });
+    case "dispatch-show":
+      return printResult({ dispatch: getDispatchApproval(agentHome, requireArg(args, "id")) });
     case "exchange-runner": {
       const runnerAgent = args.agent || "opus";
       if (runnerAgent !== "opus") {
@@ -377,6 +382,8 @@ function printHelp() {
   exchange-reply --id msg_id --agent codex --text "..."
   exchange-prune --days 30
   exchange-status
+  dispatch-list [--status pending|approved|rejected]
+  dispatch-show --id dispatch_id
   exchange-runner --agent opus --once [--repo /path] [--settings /path/opus-runner-settings.json]
   exchange-runner-session-status [--chat-id telegram_chat_id]
   exchange-runner-service-print [--repo /path] [--interval-seconds N]
@@ -438,4 +445,14 @@ function requireTaskId(args) {
     throw new Error("Missing task id");
   }
   return args._[0];
+}
+
+function filterDispatchApprovals(dispatches, status) {
+  if (!status) {
+    return dispatches;
+  }
+  if (!["pending", "approved", "rejected"].includes(status)) {
+    throw new Error("Invalid dispatch status");
+  }
+  return dispatches.filter((dispatch) => dispatch.status === status);
 }

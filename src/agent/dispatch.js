@@ -115,6 +115,10 @@ export function listDispatchApprovals(agentHome) {
   return latestDispatchApprovals(agentHome);
 }
 
+export function getDispatchApproval(agentHome, id) {
+  return requireDispatchApproval(agentHome, id);
+}
+
 export function listPendingDispatchNotifications(agentHome) {
   return latestDispatchApprovals(agentHome)
     .filter((approval) => approval.status === "pending")
