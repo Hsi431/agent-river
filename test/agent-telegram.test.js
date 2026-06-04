@@ -20,6 +20,7 @@ import { createTelegramRequest, handleTelegramUpdate, parseTelegramUpdateJson, p
 import { agentPaths } from "../src/agent/paths.js";
 import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwitch, writeAgentConfig } from "../src/agent/safety.js";
 import { writeTask } from "../src/agent/tasks.js";
+import { createDispatchApproval, listDispatchApprovals } from "../src/agent/dispatch.js";
 import { statePaths } from "codex-memory-river/src/paths.js";
 import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
 
@@ -548,6 +549,147 @@ test("telegram poll answers missing-chat callbacks without enqueueing", async ()
   assert.equal(audit[0].reason, "callback_missing_chat");
 });
 
+test("telegram poll sends pending dispatch approval with inline buttons", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-dispatch-notify-");
+  allowGatewayUser(agentHome, "123");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const created = createDispatchApproval({
+    agentHome,
+    proposedBy: "opus",
+    proposal: {
+      to: "codex",
+      task: "Implement the dispatch notification test coverage.",
+      reason: "Codex owns the Telegram notification path.",
+      suggested_mode: "plan",
+    },
+    parentMsgId: "msg_parent",
+    chatId: "456",
+  });
+  const calls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedFetch(calls, [[]]),
+  });
+  const sends = calls.filter((call) => call.method === "sendMessage");
+  const approval = listDispatchApprovals(agentHome)[0];
+
+  assert.equal(result.dispatch_notifications[0].id, created.approval.id);
+  assert.equal(result.dispatch_notifications[0].sent, true);
+  assert.equal(sends.length, 1);
+  assert.match(sends[0].body.text, /待核准跨 agent 派工/);
+  assert.deepEqual(sends[0].body.reply_markup.inline_keyboard[0].map((button) => button.callback_data), [
+    `dispatch:approve:${created.approval.id}`,
+    `dispatch:reject:${created.approval.id}`,
+  ]);
+  assert.ok(approval.notified_at);
+});
+
+test("dispatch approval callback to codex creates a pending task and no exchange message", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-dispatch-codex-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo/agent-river" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const created = createDispatchApproval({
+    agentHome,
+    proposedBy: "opus",
+    proposal: {
+      to: "codex",
+      task: "Implement the approved dispatch task path.",
+      reason: "Codex owns the implementation.",
+      suggested_mode: "edit",
+    },
+    chatId: "456",
+  });
+  const calls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedFetch(calls, [[telegramCallbackUpdate({ updateId: 32, fromId: 123, chatId: 456, data: `dispatch:approve:${created.approval.id}` })], []]),
+  });
+  const approvals = listDispatchApprovals(agentHome);
+  const tasks = fs.readdirSync(agentPaths(agentHome).tasksDir);
+  const task = JSON.parse(fs.readFileSync(path.join(agentPaths(agentHome).tasksDir, tasks[0]), "utf8"));
+
+  assert.equal(result.handled[0].reason, "dispatch_approve");
+  assert.equal(approvals[0].status, "approved");
+  assert.equal(approvals[0].outcome.type, "task");
+  assert.equal(task.id, approvals[0].outcome.id);
+  assert.equal(task.executor, "codex");
+  assert.equal(task.approval, "pending");
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 0);
+  const taskReply = calls.find((call) => call.method === "sendMessage" && /待核准 Codex 任務/.test(call.body.text));
+  assert.ok(taskReply);
+  const buttons = taskReply.body.reply_markup.inline_keyboard[0];
+  assert.equal(buttons[0].callback_data, `owner:approve:${task.id}`);
+  assert.equal(buttons[1].callback_data, `owner:reject:${task.id}`);
+  assert.equal(buttons[2].callback_data, `owner:status:${task.id}`);
+});
+
+test("dispatch approval callback to opus creates a dispatch exchange message", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-dispatch-opus-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo/agent-river" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const created = createDispatchApproval({
+    agentHome,
+    proposedBy: "codex",
+    proposal: {
+      to: "opus",
+      task: "Review the approved dispatch exchange path.",
+      reason: "Opus should review the safety boundary.",
+      suggested_mode: "plan",
+    },
+    chatId: "456",
+  });
+  const calls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedFetch(calls, [[telegramCallbackUpdate({ updateId: 33, fromId: 123, chatId: 456, data: `dispatch:approve:${created.approval.id}` })], []]),
+  });
+  const message = readJsonl(agentPaths(agentHome).exchangeMessages)[0];
+
+  assert.equal(result.handled[0].reason, "dispatch_approve");
+  assert.equal(message.from, "codex");
+  assert.equal(message.to, "opus");
+  assert.equal(message.channel, "dispatch");
+  assert.equal(message.dispatch.kind, "agent_dispatch");
+  assert.equal(listDispatchApprovals(agentHome)[0].outcome.id, message.id);
+});
+
+test("dispatch reject callback creates no task or exchange message", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-dispatch-reject-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo/agent-river" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const created = createDispatchApproval({
+    agentHome,
+    proposedBy: "opus",
+    proposal: {
+      to: "codex",
+      task: "Implement this rejected dispatch request.",
+      reason: "This should be rejected.",
+      suggested_mode: "plan",
+    },
+    chatId: "456",
+  });
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedFetch([], [[telegramCallbackUpdate({ updateId: 34, fromId: 123, chatId: 456, data: `dispatch:reject:${created.approval.id}` })], []]),
+  });
+
+  assert.equal(result.handled[0].reason, "dispatch_reject");
+  assert.equal(listDispatchApprovals(agentHome)[0].status, "rejected");
+  assert.equal(fs.existsSync(agentPaths(agentHome).tasksDir), false);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 0);
+});
+
 test("telegram poll acks consumed updates even when sendMessage fails", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-send-failure-");
   allowGatewayUser(agentHome, "123");
@@ -941,6 +1083,43 @@ test("telegram exchange reply notifications are gated, deduped, and send-only", 
   assert.equal(notifications[0].reply_id, "xreply_notify_ok");
   assert.deepEqual(readJsonl(paths.exchangeMessages), beforeMessages);
   assert.equal(readJsonl(paths.chatInbox).length, 0);
+});
+
+test("telegram exchange notifications include dispatch lane and strip valid dispatch blocks", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-exchange-notify-dispatch-");
+  setTelegramCodexPolicy(agentHome, {
+    exchange_notify_enabled: true,
+    exchange_notify_chat_id: "456",
+  });
+  seedExchangeReplies(agentHome, [{
+    id: "msg_notify_dispatch",
+    replyId: "xreply_notify_dispatch",
+    channel: "dispatch",
+    replyText: [
+      "Review complete.",
+      "```agent-dispatch",
+      JSON.stringify({
+        to: "codex",
+        task: "Implement the notification strip regression test.",
+        reason: "Codex owns the Telegram notification path.",
+        mode: "plan",
+      }),
+      "```",
+    ].join("\n"),
+  }]);
+  const calls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: fakeTelegramFetch(calls, []),
+  });
+  const send = calls.find((call) => call.method === "sendMessage");
+
+  assert.equal(result.exchange_notifications.length, 1);
+  assert.match(send.body.text, /Review complete\./);
+  assert.doesNotMatch(send.body.text, /agent-dispatch/);
+  assert.doesNotMatch(send.body.text, /Implement the notification strip/);
 });
 
 test("telegram exchange reply notifications honor restart ledger", async () => {

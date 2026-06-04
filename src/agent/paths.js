@@ -39,6 +39,7 @@ export function agentPaths(agentHome) {
     codexReplies: path.join(agentHome, "codex-replies.jsonl"),
     telegramCodexLock: path.join(agentHome, "telegram-codex.lock"),
     replyApprovals: path.join(agentHome, "reply-approvals.jsonl"),
+    dispatchApprovals: path.join(agentHome, "dispatch-approvals.jsonl"),
     directSendAudit: path.join(agentHome, "direct-send-audit.jsonl"),
     ownerModeAudit: path.join(agentHome, "owner-mode-audit.jsonl"),
     bridgeStatus: path.join(agentHome, "telegram-codex-bridge-status.json"),

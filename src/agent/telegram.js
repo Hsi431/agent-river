@@ -8,7 +8,20 @@ import { enqueueChatMessage, listPendingChatReplies, markChatReplySent } from ".
 import { handleGatewayMessage } from "./gateway.js";
 import { agentPaths } from "./paths.js";
 import { getTelegramCodexPolicy, isExchangeAgentEnabled } from "./safety.js";
-import { isOwner } from "./owner-mode.js";
+import { isOwner, ownerTaskReplyMarkup } from "./owner-mode.js";
+import {
+  approveDispatch,
+  DISPATCH_CHANNEL,
+  dispatchApprovalMarkup,
+  dispatchApprovalNotice,
+  dispatchApproveNotice,
+  dispatchRejectNotice,
+  listPendingDispatchNotifications,
+  markDispatchApprovalNotified,
+  parseDispatchProposal,
+  rejectDispatch,
+} from "./dispatch.js";
+import { queueChatReply } from "./chat.js";
 
 export async function handleTelegramUpdate({ agentHome, update, memoryStateHome, runner, execFileImpl }) {
   const callback = extractCallbackQuery(update);
@@ -131,8 +144,9 @@ export async function pollTelegramOnce({
   }
   const replies = await sendPendingTelegramReplies({ agentHome, token, request, fetchImpl });
   const exchangeNotifications = await sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl });
+  const dispatchNotifications = await sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl });
 
-  return { updates: updates.length, handled, replies, exchange_notifications: exchangeNotifications, next_offset: nextOffset };
+  return { updates: updates.length, handled, replies, exchange_notifications: exchangeNotifications, dispatch_notifications: dispatchNotifications, next_offset: nextOffset };
 }
 
 export function createTelegramRequest({ transport = "fetch", fetchImpl, execFileImpl } = {}) {
@@ -290,7 +304,7 @@ async function sendPendingExchangeNotifications({ agentHome, token, request, fet
       continue;
     }
     const message = messagesById.get(reply.message_id);
-    if (!message || message.channel !== "telegram" || message.from !== "codex") {
+    if (!message || (message.channel !== "telegram" && message.channel !== DISPATCH_CHANNEL) || message.from !== "codex") {
       continue;
     }
     if (scanSecrets(String(reply.text || "")).length > 0) {
@@ -325,6 +339,28 @@ async function sendPendingExchangeNotifications({ agentHome, token, request, fet
       created_at: new Date().toISOString(),
     });
     sent.push({ reply_id: reply.id, message_id: message.id, sent: true });
+  }
+  return sent;
+}
+
+async function sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl }) {
+  const sent = [];
+  for (const approval of listPendingDispatchNotifications(agentHome)) {
+    let send_error = null;
+    try {
+      await sendTelegramMessage({
+        token,
+        request,
+        fetchImpl,
+        chatId: approval.chat_id,
+        text: dispatchApprovalNotice(approval),
+        replyMarkup: dispatchApprovalMarkup(approval.id),
+      });
+      markDispatchApprovalNotified(agentHome, approval.id);
+    } catch (error) {
+      send_error = error.message;
+    }
+    sent.push({ id: approval.id, sent: !send_error, send_error });
   }
   return sent;
 }
@@ -371,7 +407,9 @@ async function sendTelegramMessage({ token, request, fetchImpl, chatId, text, re
 // are plain continuations. Splits at paragraph → line → word boundaries to
 // avoid cutting mid-sentence. No truncation — full reply is always delivered.
 function formatExchangeNotification({ reply }) {
-  const full = String(reply.text || "").trim();
+  // Display cleanup only; approval creation happens in the runner reply path.
+  const parsed = parseDispatchProposal(reply.text);
+  const full = String(parsed.valid ? parsed.displayText : reply.text || "").trim();
   const header = `${titleCaseAgent(reply.agent_id)}:`;
   const first = `${header}\n${full}`;
   if (first.length <= TELEGRAM_MAX_CHARS) {
@@ -475,6 +513,55 @@ function handleTelegramCallback({ agentHome, callback }) {
       reason: "callback_missing_chat",
     };
   }
+  if (parsed.kind === "dispatch") {
+    let notice = parsed.action === "approve" ? "無法核准這個派工。" : "無法拒絕這個派工。";
+    let ok = false;
+    let replyMarkup = null;
+    try {
+      if (parsed.action === "approve") {
+        const result = approveDispatch({
+          agentHome,
+          id: parsed.dispatchId,
+          approvedBy: "owner",
+          defaultRepo: policy.default_repo,
+        });
+        notice = dispatchApproveNotice(result);
+        if (result.outcome?.type === "task") {
+          replyMarkup = ownerTaskReplyMarkup(result.outcome.id);
+        }
+      } else {
+        const result = rejectDispatch({ agentHome, id: parsed.dispatchId, rejectedBy: "owner" });
+        notice = dispatchRejectNotice(result.approval);
+      }
+      ok = true;
+    } catch {
+      // keep failure notice
+    }
+    const chat = enqueueChatMessage({
+      agentHome,
+      channel: "telegram",
+      userId: String(callback.from.id),
+      chatId: String(chatId),
+      text: `dispatch-${parsed.action} ${parsed.dispatchId}`,
+    });
+    if (chat.allowed) {
+      queueChatReply({ agentHome, inboxId: chat.id, text: notice, source: "dispatch", replyMarkup });
+    }
+    return {
+      ok: chat.allowed && ok,
+      chat,
+      payload: {
+        method: "answerCallbackQuery",
+        body: {
+          callback_query_id: callback.id,
+          text: chat.allowed ? "Received." : "Access denied.",
+          show_alert: false,
+        },
+      },
+      reason: chat.allowed ? `dispatch_${parsed.action}` : "access_denied",
+    };
+  }
+
   const chat = enqueueChatMessage({
     agentHome,
     channel: "telegram",
@@ -508,6 +595,7 @@ function appendCallbackAudit({ agentHome, callback, parsed, allowed, ok, reason 
     ok,
     task_id: parsed?.taskId || null,
     approval_id: parsed?.approvalId || null,
+    dispatch_id: parsed?.dispatchId || null,
     reason,
     created_at: new Date().toISOString(),
   });
@@ -521,6 +609,10 @@ function parseOwnerCallbackData(data) {
   const reply = String(data || "").match(/^owner_reply:(approve|reject):(approval_[A-Za-z0-9_-]+)$/);
   if (reply) {
     return { kind: "reply_approval", action: reply[1], approvalId: reply[2] };
+  }
+  const dispatch = String(data || "").match(/^dispatch:(approve|reject):(dispatch_[A-Za-z0-9_-]+)$/);
+  if (dispatch) {
+    return { kind: "dispatch", action: dispatch[1], dispatchId: dispatch[2] };
   }
   return null;
 }
