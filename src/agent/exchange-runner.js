@@ -298,7 +298,7 @@ export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settin
     `  node bin/codex-agent.js exchange-thread --state ${agentHome} --id ${msgId}`,
     `Step 2 — for continuity, inspect same-chat exchange metadata, then read any relevant prior threads:`,
     `  node bin/codex-agent.js exchange-runner-session-status --state ${agentHome}`,
-    `Step 3 — process the task using read-only tools (Read, Grep, Glob, git diff/log/show, npm test). You may write scratch files to /tmp.`,
+    `Step 3 — process the task using read-only tools (Read, Grep, Glob, git diff/log/show, npm test). Do not edit repo files.`,
     `Step 4 — write your reply to ${replyPath}, then send it EXACTLY ONCE:`,
     `  node bin/codex-agent.js exchange-reply --state ${agentHome} --id ${msgId} --agent opus --from-file ${replyPath}`,
     `Reply contract:`,

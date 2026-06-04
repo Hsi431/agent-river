@@ -2246,8 +2246,10 @@ test("exchange-runner-settings-print returns valid least-privilege permissions",
   assert.ok(Array.isArray(result.permissions.allow));
   assert.ok(Array.isArray(result.permissions.deny));
   assert.ok(result.permissions.allow.includes("Read"));
+  assert.ok(result.permissions.allow.includes("Write"));
   assert.ok(result.permissions.allow.some((entry) => entry.includes("exchange-runner-session-status")));
   assert.ok(result.permissions.deny.some((d) => d.startsWith("Bash(git commit")));
+  assert.ok(result.permissions.deny.some((d) => d.startsWith("Write(")));
   assert.ok(result.permissions.deny.includes("Edit"));
   assert.ok(result.permissions.deny.includes("WebFetch"));
 });
