@@ -2,18 +2,141 @@
 
 Local approval-gated Codex/Telegram agent control plane.
 
-Agent River is split from Codex Memory River. It can use `codex-memory-river`
-as a local dependency for JSONL helpers, secret scanning, preflight context, and
-memory context blocks, but it keeps agent state under `~/.codex/agent`.
+Agent River keeps agent state under `~/.codex/agent` and can use
+`codex-memory-river` for JSONL helpers, secret scanning, and optional memory
+context. It is designed for a local operator: Telegram can queue, approve, and
+inspect work, but high-risk operations such as commit, push, deploy, install,
+and delete stay manual.
 
-Run tests:
+## Status
+
+This repository is early but usable for local smoke testing:
+
+- Telegram gateway commands and allowlisted owner mode.
+- Approval-gated plan/edit tasks.
+- Opus exchange runner for read-only review and bounded edit execution.
+- Owner-approved cross-agent dispatch from Opus to Codex or Opus.
+- Systemd `--user` unit/timer generation only; the CLI does not enable or start
+  services for you.
+
+## Requirements
+
+- Node.js 20 or newer.
+- A sibling checkout of `codex-memory-river`, because this package currently
+  depends on `file:../codex-memory-river`.
+- Optional: `codex` CLI for Codex execution.
+- Optional: `claude` CLI for the Opus exchange runner.
+- Optional: a Telegram bot token for Telegram polling/bridge flows.
+
+## Install
+
+From a workspace that contains both sibling repos:
 
 ```sh
+git clone <codex-memory-river-repo-url> codex-memory-river
+git clone <agent-river-repo-url> agent-river
+cd agent-river
+npm install
 npm test
 ```
 
-Run the CLI from this source tree:
+Run the CLI from the source tree:
 
 ```sh
 node bin/codex-agent.js status --state ~/.codex/agent
+node bin/codex-agent.js --help
 ```
+
+For development smoke tests, use an isolated state directory:
+
+```sh
+node bin/codex-agent.js status --state .local-agent-state
+```
+
+## Telegram Quickstart
+
+Keep tokens in the environment, not in agent state:
+
+```sh
+export TELEGRAM_BOT_TOKEN='...'
+node bin/codex-agent.js allow-user --state ~/.codex/agent --user '<telegram_user_id>'
+node bin/codex-agent.js telegram-poll --state ~/.codex/agent --transport curl
+```
+
+Send `agent help` or `agent status` to the bot, then poll once. For a long-running
+local bridge, generate systemd files and review them before enabling manually:
+
+```sh
+mkdir -p ~/.config/codex-agent ~/.config/systemd/user
+printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" > ~/.config/codex-agent/telegram.env
+
+node bin/codex-agent.js telegram-codex-service-print --state ~/.codex/agent --mode bridge
+node bin/codex-agent.js telegram-codex-service-write --state ~/.codex/agent --mode bridge --dir ~/.config/systemd/user
+node bin/codex-agent.js telegram-codex-service-status --state ~/.codex/agent --mode bridge
+```
+
+The generated unit still requires you to run `systemctl --user ...` manually.
+
+## Opus And Dispatch
+
+Enable Opus in the exchange mailbox:
+
+```sh
+node bin/codex-agent.js agent-enable --state ~/.codex/agent --agent opus --kind review
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
+  --owner-mode-enabled true \
+  --exchange-runner-enabled true \
+  --exchange-notify-enabled true \
+  --exchange-notify-chat-id '<telegram_chat_id>' \
+  --default-repo "$PWD"
+```
+
+Generate runner settings and systemd files:
+
+```sh
+node bin/codex-agent.js exchange-runner-settings-print --state ~/.codex/agent
+node bin/codex-agent.js exchange-runner-settings-write --state ~/.codex/agent
+node bin/codex-agent.js exchange-runner-service-print --state ~/.codex/agent --repo "$PWD"
+node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo "$PWD"
+```
+
+Dispatch proposals are fenced JSON blocks in an agent's final reply. Agents only
+propose; Node creates a pending dispatch approval, and the owner must approve it
+before anything is routed:
+
+````md
+```agent-dispatch
+{"to":"codex","task":"Inspect the result and report observations only.","reason":"Codex owns the follow-up observation.","mode":"plan"}
+```
+````
+
+Inspect dispatch state locally:
+
+```sh
+node bin/codex-agent.js dispatch-list --state ~/.codex/agent --status pending
+node bin/codex-agent.js dispatch-show --state ~/.codex/agent --id dispatch_...
+```
+
+## Safety Model
+
+- Owner approvals are required before Telegram-driven edit execution.
+- Dispatch approval is routing consent only; Codex edit tasks still require the
+  normal execution approval.
+- Agents cannot submit cross-agent mailbox messages directly; runner settings
+  deny `exchange-submit`.
+- Dangerous owner requests are declined with a manual-action notice.
+- Agent state under `~/.codex/agent` may contain raw local task/chat text. Keep
+  it private and out of git.
+
+## Verification
+
+Before publishing or deploying local changes:
+
+```sh
+npm test
+npm pack --dry-run
+git diff --check
+```
+
+For a deeper operational runbook, see
+[`docs/AGENT_TELEGRAM_POLLING.md`](docs/AGENT_TELEGRAM_POLLING.md).
