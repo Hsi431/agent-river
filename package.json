@@ -1,0 +1,29 @@
+{
+  "name": "agent-river",
+  "version": "0.1.0",
+  "description": "Local approval-gated Codex/Telegram agent control plane.",
+  "type": "module",
+  "bin": {
+    "codex-agent": "bin/codex-agent.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "docs/",
+    "CODEX_AGENT_EXOSKELETON_ARCH_2026-05-29.md",
+    "OPUS_REVIEW_2026-05-29.md",
+    "LICENSE",
+    "README.md",
+    "package.json"
+  ],
+  "dependencies": {
+    "codex-memory-river": "file:../codex-memory-river"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
