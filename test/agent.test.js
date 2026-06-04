@@ -10,6 +10,7 @@ import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submit
 import { readRuns, transitionTask, writeTask } from "../src/agent/tasks.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { checkSafety, setDailyTokenBudget, setKillSwitch } from "../src/agent/safety.js";
+import { approveDispatch, createDispatchApproval } from "../src/agent/dispatch.js";
 import { statePaths } from "codex-memory-river/src/paths.js";
 import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
 
@@ -1566,6 +1567,60 @@ test("agent CLI exchange read commands do not mutate any ledger", async () => {
   };
 
   assert.deepEqual(after, before);
+});
+
+test("agent CLI lists and shows dispatch approvals", async () => {
+  const agentHome = makeAgentHome("codex-agent-dispatch-cli-");
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (value) => lines.push(String(value));
+  try {
+    await runAgentCli(["agent-enable", "--state", agentHome, "--agent", "opus", "--kind", "review"]);
+    const pending = createDispatchApproval({
+      agentHome,
+      proposedBy: "opus",
+      proposal: {
+        to: "codex",
+        task: "Inspect the pending dispatch list command output.",
+        reason: "Operator should see pending dispatches.",
+        suggested_mode: "plan",
+      },
+      chatId: "456",
+      now: 1000,
+    }).approval;
+    const approved = createDispatchApproval({
+      agentHome,
+      proposedBy: "codex",
+      proposal: {
+        to: "opus",
+        task: "Review the approved dispatch show command output.",
+        reason: "Operator should see the exchange outcome.",
+        suggested_mode: "plan",
+      },
+      chatId: "456",
+      now: 2000,
+    }).approval;
+    approveDispatch({ agentHome, id: approved.id, defaultRepo: "/repo/unused", now: 3000 });
+
+    await runAgentCli(["dispatch-list", "--state", agentHome, "--status", "pending"]);
+    await runAgentCli(["dispatch-list", "--state", agentHome, "--status", "approved"]);
+    await runAgentCli(["dispatch-show", "--state", agentHome, "--id", approved.id]);
+    await assert.rejects(
+      () => runAgentCli(["dispatch-list", "--state", agentHome, "--status", "waiting"]),
+      /Invalid dispatch status/,
+    );
+
+    const pendingList = JSON.parse(lines[1]);
+    const approvedList = JSON.parse(lines[2]);
+    const shown = JSON.parse(lines[3]).dispatch;
+    assert.deepEqual(pendingList.dispatches.map((entry) => entry.id), [pending.id]);
+    assert.deepEqual(approvedList.dispatches.map((entry) => entry.id), [approved.id]);
+    assert.equal(shown.id, approved.id);
+    assert.equal(shown.status, "approved");
+    assert.equal(shown.outcome.type, "exchange");
+  } finally {
+    console.log = originalLog;
+  }
 });
 
 test("agent CLI controls local kill switch and token budget", async () => {

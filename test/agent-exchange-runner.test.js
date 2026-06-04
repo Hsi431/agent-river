@@ -180,6 +180,38 @@ test("exchange runner creates dispatch approval from a valid final reply block",
   assert.equal(approvals[0].chat_id, "456");
 });
 
+test("exchange runner reports blocked dispatch proposals without writing approvals", async () => {
+  const agentHome = makeAgentHome("codex-agent-runner-dispatch-blocked-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  seedMessages(agentHome, [{
+    ...eligible("msg_blocked_dispatch", {
+      channel: DISPATCH_CHANNEL,
+      dispatch: { kind: "agent_dispatch", hop: 2, proposed_by: "codex" },
+    }),
+    chat_id: "456",
+  }]);
+  const replyText = [
+    "Review complete.",
+    "```agent-dispatch",
+    JSON.stringify({
+      to: "codex",
+      task: "Inspect this dispatch after the maximum hop count.",
+      reason: "This should be blocked by max hop enforcement.",
+      mode: "plan",
+    }),
+    "```",
+  ].join("\n");
+
+  const result = await runExchangeRunnerOnce({
+    agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: spawnThatReplies(agentHome, [], replyText),
+  });
+
+  assert.equal(result.dispatch_approval_id, null);
+  assert.equal(result.dispatch_blocked_reason, "max_hops");
+  assert.equal(readJsonl(agentPaths(agentHome).dispatchApprovals).length, 0);
+});
+
 test("exchange runner leaves invalid dispatch blocks visible and inert", async () => {
   const agentHome = makeAgentHome("codex-agent-runner-dispatch-invalid-");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
