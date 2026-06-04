@@ -11,6 +11,7 @@ import {
   releaseExchangeClaim,
   replyExchangeMessage,
 } from "./exchange.js";
+import { createDispatchApproval, DISPATCH_CHANNEL, parseDispatchProposal } from "./dispatch.js";
 
 // Opus-side exchange auto-runner (v1). Single-shot: pick at most one eligible
 // message addressed to opus over Telegram from codex, claim it in Node, then
@@ -237,9 +238,30 @@ export async function runExchangeRunnerOnce({
     // Reply existence is the source of truth: the message was open (no prior
     // reply, else it would be completed and excluded), so any reply now is from
     // this run's spawned Claude.
-    if (hasReply(paths, message.id)) {
+    const reply = replyFor(paths, message.id);
+    if (reply) {
+      const parsed = parseDispatchProposal(reply.text);
+      const proposed = parsed.valid
+        ? createDispatchApproval({
+          agentHome,
+          proposedBy: RUNNER_AGENT,
+          proposal: parsed.proposal,
+          parentMsgId: message.id,
+          parentDispatch: message.dispatch || null,
+          chatId,
+          now,
+        })
+        : null;
       recordDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now });
-      return summary({ ran: true, reason: "replied", message_id: message.id, attempt, spawn: spawnResult });
+      return summary({
+        ran: true,
+        reason: "replied",
+        message_id: message.id,
+        attempt,
+        spawn: spawnResult,
+        dispatch_approval_id: proposed?.approval?.id || null,
+        dispatch_blocked_reason: proposed?.blocked ? proposed.reason : null,
+      });
     }
 
     if (attempt < maxAttempts) {
@@ -350,7 +372,7 @@ export function pickEligibleMessage(agentHome) {
   const expectedFrom = getPrimaryAgentId(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
     .filter((message) => message.to === RUNNER_AGENT
-      && message.channel === "telegram"
+      && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
       && message.from === expectedFrom
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
@@ -361,8 +383,8 @@ function isAvailableClaim(claim) {
   return !claim || claim.status === "released" || claim.status === "expired";
 }
 
-function hasReply(paths, messageId) {
-  return readJsonl(paths.exchangeReplies).some((reply) => reply.message_id === messageId);
+function replyFor(paths, messageId) {
+  return readJsonl(paths.exchangeReplies).find((reply) => reply.message_id === messageId) || null;
 }
 
 function spawnAttemptsFor(paths, messageId) {

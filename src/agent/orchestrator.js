@@ -21,8 +21,8 @@ import { redactSecrets, scanSecrets } from "codex-memory-river/src/secret-scan.j
 
 export const EDIT_VERIFY_COMMAND = ["npm", "test"];
 
-export function submitAgentTask({ agentHome, repo, request, mode = "plan", approval = "not_required" }) {
-  return createTask({ agentHome, repo, request, mode, approval });
+export function submitAgentTask({ agentHome, repo, request, mode = "plan", approval = "not_required", executor = "codex", chatId = null, source = "cli", requester = "local" }) {
+  return createTask({ agentHome, repo, request, mode, approval, executor, chatId, source, requester });
 }
 
 export function approveAgentTask({ agentHome, id }) {

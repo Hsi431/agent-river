@@ -241,6 +241,40 @@ spawns headless Claude with restricted settings, and replies through
 files under `/tmp`; file edits or external actions must be requested back through
 the owner flow.
 
+#### Agent dispatch proposals
+
+An agent reply may propose one cross-agent handoff by ending its final reply
+with one fenced JSON block:
+
+````md
+```agent-dispatch
+{
+  "to": "codex",
+  "task": "Implement the focused dispatch callback test.",
+  "reason": "Codex owns this implementation path.",
+  "mode": "plan"
+}
+```
+````
+
+Only the agent's final reply text is parsed, and only the first
+`agent-dispatch` block is considered. Exchange threads, source files, raw
+Telegram text, and invalid blocks are never parsed as dispatch proposals. Valid
+blocks are stripped from the Telegram-visible reply; invalid blocks stay visible
+for debugging.
+
+Dispatch approval is routing consent only. The agent cannot submit mailbox
+messages itself: runner settings still deny `exchange-submit`, and Node is the
+only cross-agent outlet. Owner approval creates one of two outcomes:
+
+- `to:"opus"`: Node submits an exchange message with `channel:"dispatch"`.
+- `to:"codex"`: Node creates an `executor:"codex"` pending task; if it is an
+  edit, the normal execution approval is still required.
+
+Dispatch approvals are stored separately in `dispatch-approvals.jsonl` with an
+`outcome` pointer to the created exchange message or task. Hop count starts at
+1 for the first approved dispatch and is capped at 2.
+
 Continuity is per Telegram chat, not shared with the live Codex session. The
 runner stores `chat_id -> session_id` and resumes Claude for later `@opus`
 messages in that chat. The mailbox remains the source of truth: runner prompts
@@ -263,9 +297,9 @@ Generate/review the runner service, restricted settings, and drift status:
 ```sh
 node bin/codex-agent.js exchange-runner-settings-print --state ~/.codex/agent
 node bin/codex-agent.js exchange-runner-settings-write --state ~/.codex/agent
-node bin/codex-agent.js exchange-runner-service-print --state ~/.codex/agent --repo /home/fnata_claw/codex-memory-river
-node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo /home/fnata_claw/codex-memory-river
-node bin/codex-agent.js exchange-runner-service-status --state ~/.codex/agent --repo /home/fnata_claw/codex-memory-river
+node bin/codex-agent.js exchange-runner-service-print --state ~/.codex/agent --repo /home/fnata_claw/agent-river
+node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo /home/fnata_claw/agent-river
+node bin/codex-agent.js exchange-runner-service-status --state ~/.codex/agent --repo /home/fnata_claw/agent-river
 ```
 
 `exchange-runner-service-status` reports `unit.drift`, `timer.drift`, and

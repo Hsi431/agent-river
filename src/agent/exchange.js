@@ -7,7 +7,7 @@ import { isExchangeAgentEnabled } from "./safety.js";
 const VALID_TARGET = /^[a-z][a-z0-9_-]*$|^any$/;
 const DEFAULT_LEASE_SECONDS = 3600;
 
-export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text }) {
+export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, dispatch = null }) {
   const sender = requireName(from, "from");
   const target = requireName(to, "to");
   const body = String(text || "");
@@ -28,6 +28,7 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     chat_id: chatId ? String(chatId) : null,
     text: redacted,
     text_hash: shortHash(redacted),
+    ...(dispatch ? { dispatch } : {}),
     created_at: now,
   };
   appendJsonl(agentPaths(agentHome).exchangeMessages, message);

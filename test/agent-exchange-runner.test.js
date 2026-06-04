@@ -8,6 +8,7 @@ import { agentPaths } from "../src/agent/paths.js";
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { replyExchangeMessage } from "../src/agent/exchange.js";
 import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
+import { DISPATCH_CHANNEL } from "../src/agent/dispatch.js";
 
 const REPO = "/home/fnata_claw/codex-memory-river";
 // A throwaway settings file that exists, so tests exercise the runner past the
@@ -56,6 +57,28 @@ test("exchange runner only picks to=opus channel=telegram from=codex open messag
   assert.equal(claimed.includes("msg_cli"), false);
   assert.equal(claimed.includes("msg_human"), false);
   assert.equal(claimed.includes("msg_any"), false);
+});
+
+test("exchange runner also picks approved dispatch lane messages", async () => {
+  const agentHome = makeAgentHome("codex-agent-runner-dispatch-lane-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  seedMessages(agentHome, [
+    eligible("msg_dispatch", {
+      channel: DISPATCH_CHANNEL,
+      createdAt: "2026-06-03T10:00:00.000Z",
+      dispatch: { kind: "agent_dispatch", hop: 1, proposed_by: "codex" },
+    }),
+  ]);
+  const spawnedIds = [];
+
+  const result = await runExchangeRunnerOnce({
+    agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: spawnThatReplies(agentHome, spawnedIds, "Dispatch handled."),
+  });
+
+  assert.equal(result.reason, "replied");
+  assert.equal(result.message_id, "msg_dispatch");
+  assert.deepEqual(spawnedIds, ["msg_dispatch"]);
 });
 
 test("exchange runner claims before spawning and does not spawn when claim fails", async () => {
@@ -116,6 +139,62 @@ test("exchange runner success completes the message and records a dispatch row",
   // Send-only: the runner never creates a new exchange message or chat inbox row.
   assert.deepEqual(readJsonl(agentPaths(agentHome).exchangeMessages), beforeMessages);
   assert.equal(readJsonl(agentPaths(agentHome).chatInbox).length, 0);
+});
+
+test("exchange runner creates dispatch approval from a valid final reply block", async () => {
+  const agentHome = makeAgentHome("codex-agent-runner-dispatch-proposal-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  seedMessages(agentHome, [{
+    ...eligible("msg_proposal", {
+      channel: DISPATCH_CHANNEL,
+      dispatch: { kind: "agent_dispatch", hop: 1, proposed_by: "codex" },
+    }),
+    chat_id: "456",
+  }]);
+  const replyText = [
+    "Review complete.",
+    "```agent-dispatch",
+    JSON.stringify({
+      to: "codex",
+      task: "Implement the dispatch callback integration test.",
+      reason: "Codex should wire its own owner callback path.",
+      mode: "plan",
+    }),
+    "```",
+  ].join("\n");
+
+  const result = await runExchangeRunnerOnce({
+    agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: spawnThatReplies(agentHome, [], replyText),
+  });
+  const approvals = readJsonl(agentPaths(agentHome).dispatchApprovals);
+
+  assert.match(result.dispatch_approval_id, /^dispatch_/);
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].status, "pending");
+  assert.equal(approvals[0].proposed_by, "opus");
+  assert.equal(approvals[0].to, "codex");
+  assert.equal(approvals[0].parent_msg_id, "msg_proposal");
+  assert.equal(approvals[0].parent_hop, 1);
+  assert.equal(approvals[0].hop, 2);
+  assert.equal(approvals[0].chat_id, "456");
+});
+
+test("exchange runner leaves invalid dispatch blocks visible and inert", async () => {
+  const agentHome = makeAgentHome("codex-agent-runner-dispatch-invalid-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  seedMessages(agentHome, [eligible("msg_invalid_proposal")]);
+  const invalid = "Reply\n```agent-dispatch\n{not-json}\n```";
+
+  const result = await runExchangeRunnerOnce({
+    agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: spawnThatReplies(agentHome, [], invalid),
+  });
+  const replies = readJsonl(agentPaths(agentHome).exchangeReplies);
+
+  assert.equal(result.dispatch_approval_id, null);
+  assert.equal(readJsonl(agentPaths(agentHome).dispatchApprovals).length, 0);
+  assert.equal(replies[0].text, invalid);
 });
 
 test("exchange runner releases the claim and retries when a spawn produces no reply", async () => {
@@ -200,12 +279,12 @@ test("buildClaudeInvocation pins model/settings/add-dir and never includes raw m
     model: "sonnet",
     settingsPath: "/cfg/opus-runner-settings.json",
   });
-  const joined = invocation.args.join(" ");
+  const joined = invocation.args.join("\0");
 
   assert.equal(invocation.command, "claude");
   assert.ok(invocation.args.includes("-p"));
-  assert.match(joined, /--model sonnet/);
-  assert.match(joined, /--settings \/cfg\/opus-runner-settings\.json/);
+  assert.match(joined, /--model\0sonnet/);
+  assert.match(joined, /--settings\0\/cfg\/opus-runner-settings\.json/);
   assert.ok(invocation.args.includes("--add-dir"));
   assert.equal(invocation.args[invocation.args.indexOf("--add-dir") + 1], REPO);
   assert.ok(invocation.args.includes("--max-turns"));
@@ -432,6 +511,7 @@ function eligible(id, overrides = {}) {
     to: overrides.to || "opus",
     channel: overrides.channel || "telegram",
     thread_id: overrides.threadId || null,
+    ...(overrides.dispatch ? { dispatch: overrides.dispatch } : {}),
     text: overrides.text || "Review request",
     text_hash: `hash_${id}`,
     created_at: overrides.createdAt || new Date().toISOString(),
