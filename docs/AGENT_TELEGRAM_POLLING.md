@@ -1,7 +1,7 @@
 # Codex Agent Telegram Polling Runbook
 
-This runbook is for the source-tree-only `codex-agent` Telegram polling path.
-It is not part of the published npm package.
+This advanced runbook is for the source-tree `codex-agent` Telegram polling
+path. The top-level README has the shorter install and smoke-test path.
 
 ## Scope
 
@@ -126,7 +126,7 @@ Tasks: 0 queued=0 done=0 failed=0 runs=0 kill_switch=false remaining_tokens=2000
 8. Submit a plan-only task:
 
 ```text
-agent submit --repo /home/fnata_claw/codex-memory-river --request "Plan the next safe change"
+agent submit --repo /path/to/repo --request "Plan the next safe change"
 ```
 
 Then poll once:
@@ -275,6 +275,14 @@ Dispatch approvals are stored separately in `dispatch-approvals.jsonl` with an
 `outcome` pointer to the created exchange message or task. Hop count starts at
 1 for the first approved dispatch and is capped at 2.
 
+Operators can inspect dispatch approvals without reading JSONL directly:
+
+```sh
+node bin/codex-agent.js dispatch-list --state ~/.codex/agent --status pending
+node bin/codex-agent.js dispatch-list --state ~/.codex/agent --status approved
+node bin/codex-agent.js dispatch-show --state ~/.codex/agent --id dispatch_...
+```
+
 Continuity is per Telegram chat, not shared with the live Codex session. The
 runner stores `chat_id -> session_id` and resumes Claude for later `@opus`
 messages in that chat. The mailbox remains the source of truth: runner prompts
@@ -286,7 +294,7 @@ Inspect session continuity without exposing raw request/reply text:
 
 ```sh
 node bin/codex-agent.js exchange-runner-session-status --state ~/.codex/agent
-node bin/codex-agent.js exchange-runner-session-status --state ~/.codex/agent --chat-id 8209850750
+node bin/codex-agent.js exchange-runner-session-status --state ~/.codex/agent --chat-id <telegram_chat_id>
 ```
 
 The status output includes `chat_id`, `session_id`, `updated_at`, recent
@@ -297,9 +305,9 @@ Generate/review the runner service, restricted settings, and drift status:
 ```sh
 node bin/codex-agent.js exchange-runner-settings-print --state ~/.codex/agent
 node bin/codex-agent.js exchange-runner-settings-write --state ~/.codex/agent
-node bin/codex-agent.js exchange-runner-service-print --state ~/.codex/agent --repo /home/fnata_claw/agent-river
-node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo /home/fnata_claw/agent-river
-node bin/codex-agent.js exchange-runner-service-status --state ~/.codex/agent --repo /home/fnata_claw/agent-river
+node bin/codex-agent.js exchange-runner-service-print --state ~/.codex/agent --repo /path/to/agent-river
+node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo /path/to/agent-river
+node bin/codex-agent.js exchange-runner-service-status --state ~/.codex/agent --repo /path/to/agent-river
 ```
 
 `exchange-runner-service-status` reports `unit.drift`, `timer.drift`, and
@@ -318,7 +326,7 @@ push replies to Telegram-origin Codex exchange messages:
 ```sh
 node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
   --exchange-notify-enabled true \
-  --exchange-notify-chat-id 8209850750 \
+  --exchange-notify-chat-id <telegram_chat_id> \
   --exchange-notify-max-per-cycle 3
 ```
 
@@ -448,7 +456,7 @@ gateway audits are never read; the assembled prompt is secret-scanned before
 `codex exec`. To enable repo memory:
 
 ```sh
-node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent --default-repo /home/fnata_claw/codex-memory-river --memory-enabled true
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent --default-repo /path/to/repo --memory-enabled true
 # tune history/size if needed:
 node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent --history-messages 8 --context-max-chars 6000
 ```
@@ -592,7 +600,7 @@ Setup:
 ```sh
 # 1) enable the loop policy (approval stays required; optionally repo memory)
 node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent --enabled true \
-  --default-repo /home/fnata_claw/codex-memory-river --memory-enabled true
+  --default-repo /path/to/repo --memory-enabled true
 
 # 2) create the env file with your bot token (NEVER stored in the repo or unit)
 mkdir -p ~/.config/codex-agent
@@ -738,7 +746,7 @@ allowlist):
 
 ```sh
 node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
-  --direct-send-enabled true --direct-send-user 8209850750
+  --direct-send-enabled true --direct-send-user <telegram_user_id>
 
 node bin/codex-agent.js telegram-codex-policy --state ~/.codex/agent
 tail -n 20 ~/.codex/agent/direct-send-audit.jsonl
@@ -771,7 +779,7 @@ references, and over-length output still route to approval.
 ```sh
 node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
   --direct-send-enabled true \
-  --direct-send-user 8209850750 \
+  --direct-send-user <telegram_user_id> \
   --direct-send-trusted-qa-enabled true \
   --direct-send-trusted-qa-max-chars 1200
 ```
@@ -793,7 +801,7 @@ refusal notice. Owner paths should not silently park work.
 ```sh
 node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
   --direct-send-enabled true \
-  --direct-send-user 8209850750 \
+  --direct-send-user <telegram_user_id> \
   --owner-mode-enabled true \
   --owner-low-risk-auto-plan-enabled true
 ```
