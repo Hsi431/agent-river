@@ -76,6 +76,10 @@ test("gateway parses status and submit commands", () => {
     command: "exchange_ask",
     args: { agent: "opus", text: "Review this patch", threadId: null },
   });
+  assert.deepEqual(parseGatewayCommand("@opus Review this patch\nThen propose a dispatch."), {
+    command: "exchange_ask",
+    args: { agent: "opus", text: "Review this patch\nThen propose a dispatch.", threadId: null },
+  });
   assert.deepEqual(parseGatewayCommand("opus: Review this patch"), {
     command: "exchange_ask",
     args: { agent: "opus", text: "Review this patch", threadId: null },
@@ -334,6 +338,24 @@ test("owner @opus review request falls through to the read-only mailbox lane", a
   makeOwner(agentHome, "123", "/repo/x");
 
   const result = await handleGatewayMessage({ agentHome, userId: "123", text: "@opus review the latest patch", runnerTrigger: () => {} });
+
+  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.equal(listTasks(agentHome).length, 0);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
+});
+
+test("owner @opus explicit read-only boundary does not create an edit task", async () => {
+  const agentHome = makeAgentHome("codex-agent-gateway-opus-readonly-boundary-");
+  allowGatewayUser(agentHome, "123");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  makeOwner(agentHome, "123", "/repo/x");
+
+  const result = await handleGatewayMessage({
+    agentHome,
+    userId: "123",
+    text: "@opus 請只做唯讀 review。不要修改檔案，不要建立 edit task。請檢查 Phase 3.1 dispatch smoke 的流程是否清楚。",
+    runnerTrigger: () => {},
+  });
 
   assert.match(result.reply, /Opus[\s\S]*msg_/);
   assert.equal(listTasks(agentHome).length, 0);

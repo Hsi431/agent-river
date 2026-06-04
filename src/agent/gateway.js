@@ -134,9 +134,9 @@ export function parseGatewayCommand(text) {
 
 export function parseGatewayShortcut(text) {
   const raw = String(text || "").trim();
-  let match = raw.match(/^@([a-z][a-z0-9_-]*)\s+(.+)$/);
+  let match = raw.match(/^@([a-z][a-z0-9_-]*)\s+([\s\S]+)$/);
   if (!match) {
-    match = raw.match(/^([a-z][a-z0-9_-]*):\s*(.+)$/);
+    match = raw.match(/^([a-z][a-z0-9_-]*):\s*([\s\S]+)$/);
   }
   if (!match) {
     return null;

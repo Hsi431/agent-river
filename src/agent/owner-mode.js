@@ -174,6 +174,9 @@ export function classifyOpusAsk(text, policy = {}) {
   if (isDangerousActionRequest(raw)) {
     return { lane: "dangerous", reasons: ["dangerous"] };
   }
+  if (hasExplicitReadOnlyBoundary(raw)) {
+    return { lane: "conversation", reasons: ["read_only_boundary"] };
+  }
   if (isEditActionRequest(raw)) {
     // An edit request that also reads like a read-only ask (e.g. "add a line
     // that EXPLAINS …", "說明") is ambiguous — route it to the approval button,
@@ -319,6 +322,11 @@ function hasDangerousAction(text) {
 function hasReadOnlyIntent(text) {
   return /\b(check|review|inspect|status|summarize|summary|explain|analyze|look|read)\b/i.test(text)
     || /(檢查|查看|查詢|看一下|看下|狀態|整理|摘要|說明|解釋|分析|review|對齊進度)/i.test(text);
+}
+
+function hasExplicitReadOnlyBoundary(text) {
+  return /\b(read-only|readonly|no file changes|do not modify files|don't modify files|do not edit|don't edit|do not change files|don't change files)\b/i.test(text)
+    || /(只做唯讀|唯讀\s*review|不要修改檔案|不要改檔|不要改文件|不要建立\s*edit\s*task|不修改檔案|不改檔|不改文件)/i.test(text);
 }
 
 function hasEnglishActionWord(text, words) {
