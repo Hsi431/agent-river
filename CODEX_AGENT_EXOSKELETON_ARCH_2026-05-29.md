@@ -6,6 +6,11 @@
   push/pull memory design). Read that first; this doc assumes the Codex Memory
   River layer exists.
 
+> Historical note (2026-06-06): this is an archived design snapshot. It is useful
+> for the original mental model and phased plan, but it no longer describes the
+> current Agent River implementation exactly. Current architecture and roadmap
+> live in `docs/ARCHITECTURE.md` and `docs/ROADMAP.md`.
+
 > 中文導讀：這份是把 Codex 包成「像 OpenClaw 那樣會自己活著的 agent」的工程藍圖。
 > 核心心智模型只有一句：**Codex 是 stateless 的 worker，所有「活著」的狀態都放在
 > 外面的 orchestrator。** 下面所有設計都是這句的展開。分成 A~E 五階段，每階段
