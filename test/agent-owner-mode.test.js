@@ -572,22 +572,34 @@ test("classifyOwnerActionMode identifies dangerous, edit, and plan requests", ()
 });
 
 test("classifyOpusAsk routes conversation, edit lanes, dangerous, and blocked", () => {
-  // Conversation: review/plan/Q&A — no file changes.
-  assert.equal(classifyOpusAsk("review the latest patch").lane, "conversation");
-  assert.equal(classifyOpusAsk("規劃一下怎麼做這個功能").lane, "conversation");
-  assert.equal(classifyOpusAsk("what does this module do?").lane, "conversation");
-  // Dangerous: declined.
-  assert.equal(classifyOpusAsk("push to main").lane, "dangerous");
-  assert.equal(classifyOpusAsk("幫我 commit 並 deploy").lane, "dangerous");
-  // Low-risk edit: short + single-scope → auto.
-  assert.equal(classifyOpusAsk("fix the typo in utils.js").lane, "edit_auto");
-  assert.equal(classifyOpusAsk("幫我修正 readme 的錯字").lane, "edit_auto");
-  // Broad edit: needs approval.
-  assert.equal(classifyOpusAsk("refactor the whole exchange module").lane, "edit_approve");
-  assert.equal(classifyOpusAsk("幫我重構整個 exchange 模組").lane, "edit_approve");
-  assert.equal(classifyOpusAsk(`fix the bug and ${"x".repeat(260)}`).lane, "edit_approve");
-  // Blocked: secret/injection.
-  assert.equal(classifyOpusAsk("here is my api_key sk-abcdefghij").lane, "blocked");
+  const cases = [
+    ["here is my api_key sk-abcdefghij", "blocked"],
+    ["請只做唯讀 review，不要修改檔案。請 review 最新 commit d51dea3", "conversation"],
+    ["唯讀 review，不要改檔，然後 push", "conversation"],
+    ["review the latest commit d51dea3", "conversation"],
+    ["review the deploy script", "conversation"],
+    ["look at the install config", "conversation"],
+    ["explain the rollback procedure", "conversation"],
+    ["review the push workflow", "conversation"],
+    ["trace the reset path", "conversation"],
+    ["check the delete logic", "conversation"],
+    ["review and commit the changes", "dangerous"],
+    ["review and push the changes", "dangerous"],
+    ["push to main", "dangerous"],
+    ["deploy to prod", "dangerous"],
+    ["install packages", "dangerous"],
+    ["幫我 commit 並 deploy", "dangerous"],
+    ["fix the typo in utils.js", "edit_auto"],
+    ["幫我修正 readme 的錯字", "edit_auto"],
+    ["refactor the whole exchange module", "edit_approve"],
+    ["幫我重構整個 exchange 模組", "edit_approve"],
+    [`fix the bug and ${"x".repeat(260)}`, "edit_approve"],
+    ["規劃一下怎麼做這個功能", "conversation"],
+    ["what does this module do?", "conversation"],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(classifyOpusAsk(input).lane, expected, input);
+  }
 });
 
 test("owner edit request with post-commit adjective still creates approval buttons", async () => {
