@@ -246,6 +246,25 @@ test("exchange runner releases the claim and retries when a spawn produces no re
   assert.equal(pickEligibleMessage(agentHome)?.id, "msg_retry");
 });
 
+test("exchange runner surfaces Node-owned reply write failures", async () => {
+  const agentHome = makeAgentHome("codex-agent-runner-reply-error-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_max_attempts: 2 });
+  seedMessages(agentHome, [eligible("msg_reply_error")]);
+
+  const result = await runExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    settingsPath: SETTINGS_OK,
+    spawnImpl: async () => ({ ok: true, text: "token = sk-123456789012345678901234567890" }),
+  });
+
+  assert.equal(result.reason, "failed_released");
+  assert.match(result.reply_error, /secret/);
+  assert.match(result.spawn.replyError, /secret/);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeReplies).length, 0);
+});
+
 test("exchange runner writes a terminal blocked reply after max attempts", async () => {
   const agentHome = makeAgentHome("codex-agent-runner-blocked-");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });

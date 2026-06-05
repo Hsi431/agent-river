@@ -370,7 +370,6 @@ export function buildOpusEditSettings({ repoDir = process.cwd() } = {}) {
         "MultiEdit",
         "Write",
         `Bash(node bin/codex-agent.js exchange-thread:*)`,
-        `Bash(node bin/codex-agent.js exchange-reply:*)`,
         `Bash(node bin/codex-agent.js exchange-status:*)`,
         `Bash(node bin/codex-agent.js exchange-inbox:*)`,
         `Bash(node bin/codex-agent.js exchange-runner-session-status:*)`,

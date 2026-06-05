@@ -2303,6 +2303,7 @@ test("opus-edit-settings-print is edit-capable via acceptEdits but blocks danger
   assert.equal(result.permissions.defaultMode, "acceptEdits");
   assert.ok(result.permissions.allow.includes("Edit"));
   assert.ok(result.permissions.allow.includes("Write"));
+  assert.equal(result.permissions.allow.some((entry) => entry.includes("exchange-reply")), false);
   // Envelope still closed: no commit/push/deploy/install, no network, no dispatch.
   assert.ok(result.permissions.deny.some((d) => d.startsWith("Bash(git commit")));
   assert.ok(result.permissions.deny.some((d) => d.startsWith("Bash(git push")));

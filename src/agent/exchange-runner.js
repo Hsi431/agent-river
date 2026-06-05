@@ -270,6 +270,7 @@ export async function runExchangeRunnerOnce({
         message_id: message.id,
         attempt,
         spawn: spawnResult,
+        reply_error: spawnResult.replyError || null,
         dispatch_approval_id: proposed?.approval?.id || null,
         dispatch_blocked_reason: proposed?.blocked ? proposed.reason : null,
       });
@@ -278,7 +279,14 @@ export async function runExchangeRunnerOnce({
     if (attempt < maxAttempts) {
       safeRelease(agentHome, message.id);
       recordDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now });
-      return summary({ ran: true, reason: "failed_released", message_id: message.id, attempt, spawn: spawnResult });
+      return summary({
+        ran: true,
+        reason: "failed_released",
+        message_id: message.id,
+        attempt,
+        spawn: spawnResult,
+        reply_error: spawnResult.replyError || null,
+      });
     }
 
     // Final attempt failed: write a terminal blocked reply (we still hold the
@@ -292,7 +300,14 @@ export async function runExchangeRunnerOnce({
       safeRelease(agentHome, message.id);
     }
     recordDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now });
-    return summary({ ran: true, reason: blockedOk ? "blocked_terminal" : "blocked_reply_failed", message_id: message.id, attempt, spawn: spawnResult });
+    return summary({
+      ran: true,
+      reason: blockedOk ? "blocked_terminal" : "blocked_reply_failed",
+      message_id: message.id,
+      attempt,
+      spawn: spawnResult,
+      reply_error: spawnResult.replyError || null,
+    });
   } finally {
     releaseRunnerLock(agentHome);
   }
