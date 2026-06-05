@@ -183,8 +183,8 @@ test("non-owner keeps existing approval behavior", async () => {
   assert.equal(calls.some((c) => c.method === "sendMessage"), false);
 });
 
-test("owner Q&A guard fallback is not silent", async () => {
-  const agentHome = makeAgentHome("codex-agent-owner-fallback-");
+test("owner Q&A auto-sends status summaries with task claims and file refs", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-status-summary-");
   allowGatewayUser(agentHome, "123");
   setTelegramCodexPolicy(agentHome, {
     direct_send_enabled: true,
@@ -196,20 +196,35 @@ test("owner Q&A guard fallback is not silent", async () => {
 
   const result = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0,
-    runner: async () => "我已執行工具並完成。",
-    fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 6, fromId: 123, chatId: 456, text: "狀態如何？" })], []]),
+    runner: async () => "做完了。最後一個任務已核准並完成。\n\n結果是：`src/agent/service.js` 和 buildOpusRunnerSettings 相關變更已確認，測試通過。",
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 6, fromId: 123, chatId: 456, text: "剛剛最後一個任務做完了嗎 結果如何" })], []]),
   });
 
-  assert.equal(result.reason, "owner_qa_approval_required");
+  assert.equal(result.reason, "direct_sent");
   assert.equal(result.queued, true);
-  assert.equal(listPendingReplyApprovals(agentHome).length, 1);
-  assert.equal(calls.some((c) => c.method === "sendMessage" && c.body.text.includes("回覆需人工確認")), true);
-  const approval = listPendingReplyApprovals(agentHome)[0];
-  const send = calls.find((c) => c.method === "sendMessage" && c.body.text.includes("回覆需人工確認"));
-  assert.deepEqual(send.body.reply_markup.inline_keyboard[0].map((button) => button.callback_data), [
-    `owner_reply:approve:${approval.id}`,
-    `owner_reply:reject:${approval.id}`,
-  ]);
+  assert.equal(listPendingReplyApprovals(agentHome).length, 0);
+  assert.equal(calls.some((c) => c.method === "sendMessage" && c.body.text.includes("回覆需人工確認")), false);
+  assert.equal(calls.some((c) => c.method === "sendMessage" && c.body.text.includes("最後一個任務已核准並完成")), true);
+});
+
+test("owner Q&A still rejects secret-like output", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-secret-reject-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true,
+    direct_send_user_add: "123",
+    owner_mode_enabled: true,
+    default_repo: "/repo",
+  });
+
+  const result = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0,
+    runner: async () => "token = sk-123456789012345678901234567890",
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 7, fromId: 123, chatId: 456, text: "狀態如何？" })], []]),
+  });
+
+  assert.equal(result.reason, "reply_rejected");
+  assert.equal(listPendingReplyApprovals(agentHome).length, 0);
 });
 
 test("owner reply approval callback approves and sends the pending reply", async () => {
@@ -222,10 +237,11 @@ test("owner reply approval callback approves and sends the pending reply", async
     default_repo: "/repo",
   });
   const calls = [];
+  const pendingReply = "This reply needs owner approval.";
 
   await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0,
-    runner: async () => "我已執行工具並完成。",
+    runner: async () => pendingReply,
     fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 67, fromId: 123, chatId: 456, text: "狀態如何？" })], []]),
   });
   const approval = listPendingReplyApprovals(agentHome)[0];
@@ -240,7 +256,7 @@ test("owner reply approval callback approves and sends the pending reply", async
   assert.equal(result.reason, "owner_reply_approve");
   assert.equal(approvals.some((entry) => entry.id === approval.id && entry.status === "approved"), true);
   assert.equal(calls.some((call) => call.method === "answerCallbackQuery" && call.body.text === "Received."), true);
-  assert.equal(calls.some((call) => call.method === "sendMessage" && call.body.text === "我已執行工具並完成。"), true);
+  assert.equal(calls.some((call) => call.method === "sendMessage" && call.body.text === pendingReply), true);
 });
 
 test("owner reply approval callback rejects without sending the pending reply", async () => {
@@ -253,10 +269,11 @@ test("owner reply approval callback rejects without sending the pending reply", 
     default_repo: "/repo",
   });
   const calls = [];
+  const pendingReply = "This reply needs owner approval.";
 
   await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0,
-    runner: async () => "我已執行工具並完成。",
+    runner: async () => pendingReply,
     fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 69, fromId: 123, chatId: 456, text: "狀態如何？" })], []]),
   });
   const approval = listPendingReplyApprovals(agentHome)[0];
@@ -273,7 +290,7 @@ test("owner reply approval callback rejects without sending the pending reply", 
   assert.equal(approvals.some((entry) => entry.id === approval.id && entry.status === "rejected"), true);
   assert.equal(calls.some((call) => call.method === "answerCallbackQuery" && call.body.text === "Received."), true);
   assert.equal(sentTexts.some((text) => text === "已拒絕這則回覆。"), true);
-  assert.equal(sentTexts.filter((text) => text === "我已執行工具並完成。").length, 0);
+  assert.equal(sentTexts.filter((text) => text === pendingReply).length, 0);
 });
 
 test("owner approve command approves pending task, runs plan once, and sends result", async () => {

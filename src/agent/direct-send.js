@@ -187,6 +187,27 @@ export function guardDirectSendOutput(replyText, inboundText, policy = {}, optio
   return { ok: reasons.length === 0, reasons };
 }
 
+export function guardOwnerQaOutput(replyText, inboundText, policy = {}) {
+  const reply = String(replyText ?? "");
+  const maxChars = Number(policy.direct_send_trusted_qa_max_chars) || 1200;
+  const reasons = [];
+
+  if (!reply.trim()) {
+    reasons.push("empty");
+  }
+  if (reply.length > maxChars) {
+    reasons.push("too_long");
+  }
+  if (scanSecrets(reply).length > 0) {
+    reasons.push("secret");
+  }
+  if (languageMismatch(inboundText, reply)) {
+    reasons.push("language_mismatch");
+  }
+
+  return { ok: reasons.length === 0, reasons };
+}
+
 function containsActionClaim(text) {
   const patterns = [
     /\b(done|fixed|deployed|ran|executed|edited|committed|pushed|created|installed|deleted|merged|published)\b/ig,
@@ -223,9 +244,9 @@ export function evaluateDirectSend({ agentHome, inbox, replyText, policy, safety
   let cls = ownerQa
     ? { class: "owner_qa", eligible: true, reasons: [] }
     : classifyInboundForDirectSend(inbox.text, policy);
-  let guard = guardDirectSendOutput(replyText, inbox.text, policy, ownerQa ? {
-    maxChars: policy.direct_send_trusted_qa_max_chars,
-  } : {});
+  let guard = ownerQa
+    ? guardOwnerQaOutput(replyText, inbox.text, policy)
+    : guardDirectSendOutput(replyText, inbox.text, policy);
   if (!ownerQa && !cls.eligible && policy.direct_send_trusted_qa_enabled) {
     const trustedQa = classifyInboundForTrustedQa(inbox.text, policy);
     if (trustedQa.eligible) {
