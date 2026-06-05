@@ -344,6 +344,12 @@ test("buildClaudeInvocation pins model/settings/add-dir and never includes raw m
   assert.doesNotMatch(invocation.prompt, /exchange-reply/);
   assert.doesNotMatch(invocation.prompt, /opus-reply/);
   assert.match(invocation.prompt, /Node will record it in the mailbox/);
+  assert.match(invocation.prompt, /You are the Claude agent for Agent River/);
+  assert.match(invocation.prompt, /@claude is the preferred user-facing name/);
+  assert.match(invocation.prompt, /@opus is a backwards-compatible alias/);
+  assert.match(invocation.prompt, /conversation\/review lane is read-only/);
+  assert.match(invocation.prompt, /Owner-approved edit tasks use a separate edit lane/);
+  assert.doesNotMatch(invocation.prompt, /You are the "opus" exchange agent/);
   assert.match(invocation.prompt, /If the owner writes Chinese, use Traditional Chinese/);
   assert.match(invocation.prompt, /agent-dispatch block/);
 });

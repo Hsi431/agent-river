@@ -144,7 +144,9 @@ export function parseGatewayShortcut(text) {
   if (!match) {
     return null;
   }
-  const agent = match[1];
+  const rawAgent = match[1];
+  const agent = normalizeShortcutAgent(rawAgent);
+  const displayAgent = shortcutDisplayAgent({ rawAgent, agent });
   const body = match[2].trim();
   if (!body || agent === "any") {
     return { command: "unknown", args: {} };
@@ -155,7 +157,18 @@ export function parseGatewayShortcut(text) {
   if (body === "replies") {
     return { command: "exchange_replies", args: { agent, threadId: null } };
   }
-  return { command: "exchange_ask", args: { agent, text: body, threadId: null } };
+  return { command: "exchange_ask", args: { agent, text: body, threadId: null, displayAgent } };
+}
+
+function normalizeShortcutAgent(agent) {
+  const id = String(agent || "");
+  return id === "claude" ? "opus" : id;
+}
+
+function shortcutDisplayAgent({ rawAgent, agent }) {
+  if (rawAgent === "claude") return "Claude";
+  if (agent === "opus") return null;
+  return agent;
 }
 
 export function safeGatewayReply(text) {
@@ -252,9 +265,10 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
       // Otherwise tell the owner why it will stay silent (no false promise). The
       // msg id is kept parenthetically for debugging / follow-up reads.
       const readiness = opusRunnerReadiness(agentHome);
+      const label = parsed.args.displayAgent || claudeModelLabel(getTelegramCodexPolicy(agentHome).exchange_runner_model);
       const reply = readiness.ready
-        ? `Opus 收到,正在處理,完成後回你。(${message.id})`
-        : `已收到並放進 Opus 信箱 (${message.id}),但目前不會自動回覆(${readiness.reason})。`;
+        ? `${label} 收到,正在處理,完成後回你。(${message.id})`
+        : `已收到並放進 ${label} 信箱 (${message.id}),但目前不會自動回覆(${readiness.reason})。`;
       return { ok: true, reply, runnerTriggered };
     }
     case "exchange_inbox":
@@ -345,6 +359,7 @@ async function routeOwnerOpusAsk({ agentHome, chatId, text, memoryStateHome, run
 function formatAgentHelp() {
   return [
     "Commands:",
+    "  @claude <message>           → send message to Claude (alias for @opus)",
     "  @opus <message>             → send message to Opus",
     "  @opus inbox                 → list pending Opus messages",
     "  agent status [task_id]",

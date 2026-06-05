@@ -187,7 +187,7 @@ test("telegram adapter routes exchange ask through gateway core", async () => {
 
   assert.equal(result.gateway.ok, true);
   assert.equal(result.gateway.command, "exchange_ask");
-  assert.match(result.payload.text, /Opus[\s\S]*msg_/);
+  assert.match(result.payload.text, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(messages.length, 1);
   assert.equal(messages[0].from, "codex");
   assert.equal(messages[0].to, "opus");
@@ -211,12 +211,30 @@ test("telegram adapter routes exchange shortcut ask through gateway core", async
 
   assert.equal(mention.gateway.ok, true);
   assert.equal(mention.gateway.command, "exchange_ask");
-  assert.match(mention.payload.text, /Opus[\s\S]*msg_/);
+  assert.match(mention.payload.text, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(colon.gateway.ok, true);
   assert.equal(messages.length, 2);
   assert.equal(messages[0].to, "opus");
   assert.equal(messages[0].text, "Review from shortcut");
   assert.equal(messages[1].text, "Review from colon shortcut");
+});
+
+test("telegram adapter routes @claude as an alias for the Opus mailbox", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-exchange-claude-alias-");
+  allowGatewayUser(agentHome, "123");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+
+  const result = await handleTelegramUpdate({
+    agentHome,
+    update: telegramUpdate({ fromId: 123, chatId: 456, text: "@claude Review from Claude alias" }),
+  });
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+
+  assert.equal(result.gateway.ok, true);
+  assert.equal(result.gateway.command, "exchange_ask");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].to, "opus");
+  assert.equal(messages[0].text, "Review from Claude alias");
 });
 
 test("telegram adapter keeps unknown shortcuts on the free-form chat path", async () => {

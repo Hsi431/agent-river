@@ -720,5 +720,6 @@ function isGatewayShortcutText(text, agentHome) {
 }
 
 function isShortcutAgentName(agent, agentHome) {
-  return agent === "codex" || agent === "opus" || isExchangeAgentEnabled(agentHome, agent);
+  const id = agent === "claude" ? "opus" : agent;
+  return id === "codex" || id === "opus" || isExchangeAgentEnabled(agentHome, id);
 }
