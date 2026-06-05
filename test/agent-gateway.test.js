@@ -344,6 +344,42 @@ test("owner @opus review request falls through to the read-only mailbox lane", a
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });
 
+test("owner @opus read-only review of a commit falls through to the mailbox lane", async () => {
+  const agentHome = makeAgentHome("codex-agent-gateway-opus-review-commit-");
+  allowGatewayUser(agentHome, "123");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  makeOwner(agentHome, "123", "/repo/x");
+
+  const result = await handleGatewayMessage({
+    agentHome,
+    userId: "123",
+    text: "@opus 請只做唯讀 review，不要修改檔案，不要建立 edit task。請 review 最新 commit d51dea3",
+    runnerTrigger: () => {},
+  });
+
+  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.equal(listTasks(agentHome).length, 0);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
+});
+
+test("owner @opus read-only review of dangerous-word targets falls through to the mailbox lane", async () => {
+  const agentHome = makeAgentHome("codex-agent-gateway-opus-review-dangerous-target-");
+  allowGatewayUser(agentHome, "123");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  makeOwner(agentHome, "123", "/repo/x");
+
+  const result = await handleGatewayMessage({
+    agentHome,
+    userId: "123",
+    text: "@opus 請只做唯讀 review，不要修改檔案。請 review the deploy script and install config",
+    runnerTrigger: () => {},
+  });
+
+  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.equal(listTasks(agentHome).length, 0);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
+});
+
 test("owner @opus explicit read-only boundary does not create an edit task", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-opus-readonly-boundary-");
   allowGatewayUser(agentHome, "123");

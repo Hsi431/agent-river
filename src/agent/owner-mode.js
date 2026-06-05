@@ -171,11 +171,14 @@ export function classifyOpusAsk(text, policy = {}) {
   if (isBlocked(raw)) {
     return { lane: "blocked", reasons: blockedReasons(raw) };
   }
-  if (isDangerousActionRequest(raw)) {
-    return { lane: "dangerous", reasons: ["dangerous"] };
-  }
   if (hasExplicitReadOnlyBoundary(raw)) {
     return { lane: "conversation", reasons: ["read_only_boundary"] };
+  }
+  if (isReadOnlyDangerousReference(raw)) {
+    return { lane: "conversation", reasons: ["read_only_dangerous_reference"] };
+  }
+  if (isDangerousActionRequest(raw)) {
+    return { lane: "dangerous", reasons: ["dangerous"] };
   }
   if (isEditActionRequest(raw)) {
     // An edit request that also reads like a read-only ask (e.g. "add a line
@@ -264,6 +267,16 @@ function isDangerousActionRequest(text) {
     || /(提交|推送|部署|安裝|刪除|還原|重置|移除套件)/.test(text);
 }
 
+function isReadOnlyDangerousReference(text) {
+  const raw = String(text || "");
+  return hasReadOnlyIntent(raw)
+    && hasEnglishActionWord(raw, ["commit", "push", "deploy", "install", "delete", "rm", "drop", "destroy", "rollback", "rebase", "reset"])
+    && !/\b(?:and|then)\s+(?:commit|push|deploy|install|delete|rm|drop|destroy|rollback|rebase|reset)\b/i.test(raw)
+    && !/\b(?:commit|push|deploy|install|delete|rm|drop|destroy|rollback|rebase|reset)\s+(?:this|it|these|changes?|everything|all|and|then|to|並)\b/i.test(raw)
+    && !/(?:幫我|請|麻煩)\s*(?:commit|push|deploy|install|delete|rm|drop|destroy|rollback|rebase|reset)\b/i.test(raw)
+    && !/(提交|推送|部署|安裝|刪除|還原|重置|移除套件)/.test(raw);
+}
+
 function isEditActionRequest(text) {
   // Note: "patch" is intentionally excluded — as a noun ("review the patch") it
   // caused read requests to misroute to edit.
@@ -320,7 +333,7 @@ function hasDangerousAction(text) {
 }
 
 function hasReadOnlyIntent(text) {
-  return /\b(check|review|inspect|status|summarize|summary|explain|analyze|look|read)\b/i.test(text)
+  return /\b(check|review|inspect|status|summarize|summary|explain|analyze|look|read|trace)\b/i.test(text)
     || /(檢查|查看|查詢|看一下|看下|狀態|整理|摘要|說明|解釋|分析|review|對齊進度)/i.test(text);
 }
 
