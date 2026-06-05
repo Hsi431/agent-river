@@ -10,7 +10,7 @@ import { telegramCodexLoop, telegramCodexLoopDryRun, telegramCodexOnce } from ".
 import { telegramCodexBridge, telegramCodexBridgeStatus } from "../src/agent/telegram-codex-bridge.js";
 import { getTelegramCodexPolicy, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { buildTelegramReplyPrompt } from "../src/agent/reply-context.js";
-import { classifyInboundForDirectSend, classifyInboundForTrustedQa, guardDirectSendOutput } from "../src/agent/direct-send.js";
+import { classifyInboundForDirectSend, classifyInboundForTrustedQa, guardDirectSendOutput, guardOwnerQaOutput } from "../src/agent/direct-send.js";
 
 const DS_POLICY = { direct_send_max_chars: 280, direct_send_classes: ["ack", "greeting", "smalltalk"] };
 import { parseCodexTokenUsage, realCodexRunner, realEditRunner } from "../src/agent/codex-runner.js";
@@ -571,7 +571,7 @@ test("telegram poll answers missing-chat callbacks without enqueueing", async ()
   assert.equal(audit[0].reason, "callback_missing_chat");
 });
 
-test("telegram model callback updates config and sends refreshed model status", async () => {
+test("telegram model callback updates config and sends refreshed model status without buttons", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-model-callback-");
   allowGatewayUser(agentHome, "123");
   setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true });
@@ -589,8 +589,9 @@ test("telegram model callback updates config and sends refreshed model status", 
   assert.equal(result.handled[0].reason, "model_callback");
   assert.equal(getTelegramCodexPolicy(agentHome).codex_runner_model, "gpt-5.4-mini");
   assert.equal(fetchCalls.find((call) => call.method === "answerCallbackQuery").body.text, "Received.");
+  assert.match(sent.body.text, /已更新模型設定/);
   assert.match(sent.body.text, /codex_model=gpt-5\.4-mini/);
-  assert.equal(sent.body.reply_markup.inline_keyboard[1][0].callback_data, "model:codex:default");
+  assert.equal(sent.body.reply_markup, undefined);
 
   await pollTelegramOnce({
     agentHome,
@@ -2146,6 +2147,23 @@ test("direct-send output guard allows negated action-claim safety guidance", () 
   assert.ok(claim.reasons.includes("action_claim"));
 });
 
+test("owner Q&A output guard allows status details but still blocks secrets", () => {
+  const status = guardOwnerQaOutput(
+    "做完了。最後一個任務已核准並完成。\n`src/agent/service.js` 測試通過。",
+    "剛剛最後一個任務做完了嗎 結果如何",
+    { direct_send_trusted_qa_max_chars: 1200 },
+  );
+  assert.equal(status.ok, true);
+
+  const secret = guardOwnerQaOutput(
+    "token = sk-123456789012345678901234567890",
+    "狀態如何？",
+    { direct_send_trusted_qa_max_chars: 1200 },
+  );
+  assert.equal(secret.ok, false);
+  assert.ok(secret.reasons.includes("secret"));
+});
+
 test("telegram-codex-once DS2 auto-sends trusted allowlisted Q&A", async () => {
   const agentHome = makeAgentHome("codex-agent-ds2-auto-");
   allowGatewayUser(agentHome, "123");
@@ -3165,6 +3183,16 @@ test("real codex runner passes the prompt on stdin, not in argv", async () => {
   assert.equal(state.stdinEnded, true);
 });
 
+test("real codex runner uses a generous exec buffer for verbose stderr", async () => {
+  const state = {};
+  await realCodexRunner({
+    prompt: "Reply with exactly: ok",
+    execFileImpl: captureCodexExec(state, { writeOut: "ok" }),
+  });
+
+  assert.ok(state.options.maxBuffer >= 16 * 1024 * 1024);
+});
+
 test("real codex runner passes --model only when configured", async () => {
   const unsetHome = makeAgentHome("codex-agent-codex-model-unset-");
   const unset = {};
@@ -3251,6 +3279,7 @@ function captureCodexExec(state, { writeOut, stdout = "", stderr = "", error = n
     state.command = command;
     state.args = args;
     state.cwd = options.cwd;
+    state.options = options;
     state.stdinData = "";
     const outFile = args[args.indexOf("-o") + 1];
     if (writeOut !== undefined) {

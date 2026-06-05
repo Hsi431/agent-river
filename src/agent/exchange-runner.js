@@ -328,9 +328,11 @@ export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settin
     `Step 3 — process the task using read-only tools (Read, Grep, Glob, git diff/log/show, npm test). Do not edit repo files.`,
     `Step 4 — return only your final reply text as the Claude result. Node will record it in the mailbox.`,
     `Reply contract:`,
+    `  • Language: reply in the owner's language. If the owner writes Chinese, use Traditional Chinese.`,
     `  • Code review: list findings by severity (file:line). Say "No findings." when clean. Include residual risks and missing tests.`,
     `  • Question: concise direct answer.`,
     `  • Task requiring file edits or external actions: describe exactly what you would do and ask the owner to authorize via the Telegram @opus interface. NEVER edit files yourself.`,
+    `  • agent-dispatch block: when dispatching for a Chinese owner, write task/reason so the target reports back in Traditional Chinese.`,
     `Never include raw secrets; redact as [redacted].`,
     `If you cannot complete it, return "Blocked: <reason>" as your final reply text.`,
   ].join("\n");

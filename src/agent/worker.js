@@ -12,6 +12,7 @@ export async function runEditStep({ task, contextBlock, runner = fakeRunner } = 
     `Repo: ${task.repo}`,
     `Request: ${task.request}`,
     "",
+    ...languageInstructionLines(task),
     "Edit the relevant files, run the test suite to verify, and return a concise summary of what you changed and what the tests showed.",
   ].join("\n");
 
@@ -28,10 +29,25 @@ export async function runPlanStep({ task, contextBlock, runner = fakeRunner } = 
     `Repo: ${task.repo}`,
     `Request: ${task.request}`,
     "",
-    "Return a concise implementation plan and verification checklist.",
+    ...languageInstructionLines(task),
+    "If the request asks you to report a review/result to the owner, return that owner-facing report directly instead of an implementation plan.",
+    "Otherwise return a concise implementation plan and verification checklist.",
   ].join("\n");
 
   return runner({ prompt, task, step: "planning" });
+}
+
+function languageInstructionLines(task) {
+  if (task?.chat_id || task?.source === "dispatch") {
+    return [
+      "Language: this is owner-facing Telegram work. Reply in the owner's language; for Chinese, use Traditional Chinese.",
+      "",
+    ];
+  }
+  return [
+    "Language: reply in the same language as the request; for Chinese, use Traditional Chinese.",
+    "",
+  ];
 }
 
 async function fakeRunner({ prompt, task, step }) {

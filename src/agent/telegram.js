@@ -572,7 +572,7 @@ function handleTelegramCallback({ agentHome, callback }) {
       } else {
         setTelegramCodexPolicy(agentHome, { codex_runner_model: parsed.model === "default" ? "" : parsed.model });
       }
-      notice = formatTelegramModelStatus(agentHome);
+      notice = `已更新模型設定。\n${formatTelegramModelStatus(agentHome)}`;
     } catch {
       // keep failure notice
     }
@@ -584,7 +584,7 @@ function handleTelegramCallback({ agentHome, callback }) {
       text: `model-${parsed.agent} ${parsed.model}`,
     });
     if (chat.allowed) {
-      queueChatReply({ agentHome, inboxId: chat.id, text: notice, source: "model_control", replyMarkup: modelControlsMarkup() });
+      queueChatReply({ agentHome, inboxId: chat.id, text: notice, source: "model_control" });
     }
     return {
       ok: chat.allowed,

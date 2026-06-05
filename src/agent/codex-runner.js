@@ -11,6 +11,7 @@ import { getTelegramCodexPolicy } from "./safety.js";
 // tasks use workspace-write explicitly.
 
 const CODEX_TIMEOUT_MS = 120000;
+const CODEX_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
 export async function realCodexRunner({ prompt, execFileImpl = execFile, cwd, agentHome } = {}) {
   return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "read-only", agentHome });
@@ -84,7 +85,7 @@ function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox, model }) {
     const child = execFileImpl("codex", args, {
       cwd: cwd || process.cwd(),
       timeout: CODEX_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
+      maxBuffer: CODEX_MAX_BUFFER_BYTES,
     }, (error, stdout, stderr) => {
       resolve({
         error: error || null,

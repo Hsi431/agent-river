@@ -344,6 +344,8 @@ test("buildClaudeInvocation pins model/settings/add-dir and never includes raw m
   assert.doesNotMatch(invocation.prompt, /exchange-reply/);
   assert.doesNotMatch(invocation.prompt, /opus-reply/);
   assert.match(invocation.prompt, /Node will record it in the mailbox/);
+  assert.match(invocation.prompt, /If the owner writes Chinese, use Traditional Chinese/);
+  assert.match(invocation.prompt, /agent-dispatch block/);
 });
 
 test("buildClaudeInvocation omits --model for Claude default", () => {
