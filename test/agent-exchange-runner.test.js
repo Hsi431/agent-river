@@ -6,7 +6,6 @@ import test from "node:test";
 import { runExchangeRunnerOnce, buildClaudeInvocation, pickEligibleMessage, readRunnerSession, writeRunnerSession, clearRunnerSession, runnerSessionStatus, makeOpusEditRunner } from "../src/agent/exchange-runner.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
-import { replyExchangeMessage } from "../src/agent/exchange.js";
 import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
 import { DISPATCH_CHANNEL } from "../src/agent/dispatch.js";
 
@@ -109,8 +108,7 @@ test("exchange runner: spawn sees an active opus claim before it runs", async ()
       const id = msgIdFromInvocation(invocation);
       const latest = latestClaim(agentHome, id);
       claimedAtSpawn = latest && latest.status === "claimed" && latest.agent_id === "opus";
-      replyExchangeMessage({ agentHome, id, agent: "opus", text: "No findings." });
-      return { ok: true };
+      return { ok: true, text: "No findings." };
     },
   });
 
@@ -322,6 +320,11 @@ test("buildClaudeInvocation pins model/settings/add-dir and never includes raw m
   assert.ok(invocation.args.includes("--max-turns"));
   assert.equal(invocation.args.includes("--no-session-persistence"), false);
   assert.match(joined, /msg_argv/);
+  assert.doesNotMatch(joined, /exchange-reply/);
+  assert.doesNotMatch(joined, /opus-reply/);
+  assert.doesNotMatch(invocation.prompt, /exchange-reply/);
+  assert.doesNotMatch(invocation.prompt, /opus-reply/);
+  assert.match(invocation.prompt, /Node will record it in the mailbox/);
 });
 
 test("exchange runner never passes raw message text into the spawn argv", async () => {
@@ -335,8 +338,7 @@ test("exchange runner never passes raw message text into the spawn argv", async 
   await runExchangeRunnerOnce({
     agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: async ({ invocation }) => {
       capturedArgv = invocation.args.join(" ");
-      replyExchangeMessage({ agentHome, id: msgIdFromInvocation(invocation), agent: "opus", text: "No findings." });
-      return { ok: true };
+      return { ok: true, text: "No findings." };
     },
   });
 
@@ -446,10 +448,7 @@ test("runner saves session_id from spawn output when message has chat_id", async
 
   await runExchangeRunnerOnce({
     agentHome, repoDir: REPO, settingsPath: SETTINGS_OK,
-    spawnImpl: async ({ invocation }) => {
-      replyExchangeMessage({ agentHome, id: msgIdFromInvocation(invocation), agent: "opus", text: "Done." });
-      return { ok: true, sessionId: "new-session-xyz" };
-    },
+    spawnImpl: async () => ({ ok: true, text: "Done.", sessionId: "new-session-xyz" }),
   });
 
   assert.equal(readRunnerSession(agentPaths(agentHome), "chat_42"), "new-session-xyz");
@@ -467,8 +466,7 @@ test("runner passes stored session_id via --resume on subsequent run", async () 
     agentHome, repoDir: REPO, settingsPath: SETTINGS_OK,
     spawnImpl: async ({ invocation }) => {
       capturedArgs = invocation.args;
-      replyExchangeMessage({ agentHome, id: msgIdFromInvocation(invocation), agent: "opus", text: "Done." });
-      return { ok: true, sessionId: "stored-sid-777" };
+      return { ok: true, text: "Done.", sessionId: "stored-sid-777" };
     },
   });
 
@@ -519,8 +517,7 @@ test("runner skips session when message has no chat_id", async () => {
     agentHome, repoDir: REPO, settingsPath: SETTINGS_OK,
     spawnImpl: async ({ invocation }) => {
       capturedArgs = invocation.args;
-      replyExchangeMessage({ agentHome, id: msgIdFromInvocation(invocation), agent: "opus", text: "Done." });
-      return { ok: true, sessionId: "should-not-be-stored" };
+      return { ok: true, text: "Done.", sessionId: "should-not-be-stored" };
     },
   });
 
@@ -558,13 +555,12 @@ function spawnThatReplies(agentHome, capturedIds, text) {
   return async ({ invocation }) => {
     const id = msgIdFromInvocation(invocation);
     capturedIds.push(id);
-    replyExchangeMessage({ agentHome, id, agent: "opus", text });
-    return { ok: true };
+    return { ok: true, text };
   };
 }
 
 function msgIdFromInvocation(invocation) {
-  const match = String(invocation.reply_path || "").match(/opus-reply-(.+)\.txt$/);
+  const match = String(invocation.prompt || "").match(/Exchange message ([^\s]+) is ALREADY claimed/);
   return match ? match[1] : null;
 }
 

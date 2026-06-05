@@ -235,10 +235,21 @@ export async function runExchangeRunnerOnce({
       writeRunnerSession(paths, chatId, spawnResult.sessionId, now);
     }
 
-    // Reply existence is the source of truth: the message was open (no prior
-    // reply, else it would be completed and excluded), so any reply now is from
-    // this run's spawned Claude.
-    const reply = replyFor(paths, message.id);
+    // Node owns mailbox writes for the review lane. The spawned Claude returns
+    // final text only; it does not need Write permission or exchange-reply.
+    let reply = replyFor(paths, message.id);
+    if (!reply && spawnResult.ok && String(spawnResult.text || "").trim()) {
+      try {
+        reply = replyExchangeMessage({
+          agentHome,
+          id: message.id,
+          agent: RUNNER_AGENT,
+          text: spawnResult.text,
+        }).reply;
+      } catch (error) {
+        spawnResult = { ...spawnResult, replyError: sanitizeError(error.message) };
+      }
+    }
     if (reply) {
       const parsed = parseDispatchProposal(reply.text);
       const proposed = parsed.valid
@@ -290,23 +301,21 @@ export async function runExchangeRunnerOnce({
 // Pure construction of the headless Claude invocation. Only the message id and
 // fixed boilerplate go into argv — never the raw message text.
 export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settingsPath, maxTurns = 40, sessionId = null }) {
-  const replyPath = `/tmp/opus-reply-${msgId}.txt`;
   const prompt = [
     `You are the "opus" exchange agent for Codex Memory River.`,
-    `Exchange message ${msgId} is ALREADY claimed. Do NOT claim, release, or create new exchange messages.`,
+    `Exchange message ${msgId} is ALREADY claimed. Do NOT claim, release, reply, or create new exchange messages.`,
     `Step 1 — read the thread:`,
     `  node bin/codex-agent.js exchange-thread --state ${agentHome} --id ${msgId}`,
     `Step 2 — for continuity, inspect same-chat exchange metadata, then read any relevant prior threads:`,
     `  node bin/codex-agent.js exchange-runner-session-status --state ${agentHome}`,
     `Step 3 — process the task using read-only tools (Read, Grep, Glob, git diff/log/show, npm test). Do not edit repo files.`,
-    `Step 4 — write your reply to ${replyPath}, then send it EXACTLY ONCE:`,
-    `  node bin/codex-agent.js exchange-reply --state ${agentHome} --id ${msgId} --agent opus --from-file ${replyPath}`,
+    `Step 4 — return only your final reply text as the Claude result. Node will record it in the mailbox.`,
     `Reply contract:`,
     `  • Code review: list findings by severity (file:line). Say "No findings." when clean. Include residual risks and missing tests.`,
     `  • Question: concise direct answer.`,
     `  • Task requiring file edits or external actions: describe exactly what you would do and ask the owner to authorize via the Telegram @opus interface. NEVER edit files yourself.`,
     `Never include raw secrets; redact as [redacted].`,
-    `If you cannot complete it, send "Blocked: <reason>" via the same exchange-reply command.`,
+    `If you cannot complete it, return "Blocked: <reason>" as your final reply text.`,
   ].join("\n");
 
   const args = [
@@ -324,7 +333,7 @@ export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settin
     args.push("--resume", String(sessionId));
   }
   args.push(prompt);
-  return { command: "claude", args, cwd: repoDir, prompt, reply_path: replyPath, session_id_used: sessionId };
+  return { command: "claude", args, cwd: repoDir, prompt, session_id_used: sessionId };
 }
 
 function defaultSpawnClaude({ invocation, timeoutSeconds, execFileImpl = execFile, logPath }) {
@@ -343,29 +352,21 @@ function defaultSpawnClaude({ invocation, timeoutSeconds, execFileImpl = execFil
           // best-effort logging
         }
       }
-      const sessionId = parseSessionId(stdout);
+      const parsed = parseClaudeResult(stdout);
       resolve({
         ok: !error,
         timedOut: Boolean(error && (error.killed || error.signal === "SIGTERM" || error.code === "ETIMEDOUT")),
         code: error?.code ?? 0,
         error: error ? sanitizeError(error.message) : null,
-        sessionId,
+        text: parsed.text,
+        sessionId: parsed.sessionId,
+        tokens: parsed.tokens,
       });
     });
     // No stdin input: the prompt is an argv positional (id-only, no secret).
     child?.stdin?.on?.("error", () => {});
     child?.stdin?.end?.();
   });
-}
-
-function parseSessionId(stdout) {
-  try {
-    const data = JSON.parse(String(stdout || "").trim());
-    const id = data?.session_id;
-    return typeof id === "string" && id.length > 0 ? id : null;
-  } catch {
-    return null;
-  }
 }
 
 export function pickEligibleMessage(agentHome) {
