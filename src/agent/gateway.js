@@ -267,7 +267,7 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
       const { key, value } = parsed.args;
       if (key === "opus-model") {
         setTelegramCodexPolicy(agentHome, { exchange_runner_model: value });
-        return { ok: true, reply: `Opus runner model set to: ${value}` };
+        return { ok: true, reply: value ? `Claude runner model set to: ${claudeModelLabel(value)}` : "Claude runner model reset to default." };
       }
       if (key === "codex-model") {
         setTelegramCodexPolicy(agentHome, { codex_runner_model: value });
@@ -282,7 +282,7 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
     case "invalid_run":
       return { ok: false, reply: "Usage: agent run task_id." };
     case "invalid_config":
-      return { ok: false, reply: "Usage: agent config opus-model sonnet|opus OR agent config codex-model <model>" };
+      return { ok: false, reply: "Usage: agent config opus-model sonnet|opus|default OR agent config codex-model <model|default>" };
     default:
       return { ok: false, reply: "Unknown command." };
   }
@@ -353,7 +353,7 @@ function formatAgentHelp() {
     "  agent reject task_...",
     "  agent run task_...",
     "  agent thread msg_...        → show exchange thread",
-    "  agent config opus-model sonnet|opus",
+    "  agent config opus-model sonnet|opus|default",
     "  agent config codex-model <model|default>",
     "  agent models                → show current runner models/local usage",
   ].join("\n");
@@ -447,6 +447,9 @@ const VALID_RUNNER_MODELS = new Set(["sonnet", "opus"]);
 const VALID_CODEX_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
 function parseConfigCommand(tokens) {
+  if (tokens[0] === "opus-model" && tokens.length === 2 && /^(?:default|reset)$/i.test(tokens[1])) {
+    return { command: "agent_config", args: { key: "opus-model", value: "" } };
+  }
   if (tokens[0] === "opus-model" && tokens.length === 2 && VALID_RUNNER_MODELS.has(tokens[1])) {
     return { command: "agent_config", args: { key: "opus-model", value: tokens[1] } };
   }
@@ -535,12 +538,18 @@ function formatAgentModels({ policy, status }) {
   const remainingText = budget === Number.MAX_SAFE_INTEGER ? "n/a" : String(status.safety.today.remaining_tokens);
   return [
     "Local accounting only; not official account usage.",
-    `opus_model=${policy.exchange_runner_model}`,
-    `codex_model=${policy.codex_runner_model || "default"}`,
+    `claude_model=${policy.exchange_runner_model || "default"} (${claudeModelLabel(policy.exchange_runner_model)})`,
+    `codex_model=${policy.codex_runner_model || "default"}${policy.codex_runner_model ? "" : " (effective=gpt-5.5)"}`,
     `local_tokens_today=${status.safety.today.tokens}`,
     `local_budget=${budgetText}`,
     `local_remaining=${remainingText}`,
   ].join("\n");
+}
+
+function claudeModelLabel(model) {
+  if (model === "sonnet") return "Sonnet 4.6";
+  if (model === "opus") return "Opus 4.8";
+  return "Claude Code default";
 }
 
 function countTasks(tasks) {

@@ -567,8 +567,8 @@ function handleTelegramCallback({ agentHome, callback }) {
   if (parsed.kind === "model") {
     let notice = "無法更新模型設定。";
     try {
-      if (parsed.agent === "opus") {
-        setTelegramCodexPolicy(agentHome, { exchange_runner_model: parsed.model });
+      if (parsed.agent === "claude") {
+        setTelegramCodexPolicy(agentHome, { exchange_runner_model: parsed.model === "default" ? "" : parsed.model });
       } else {
         setTelegramCodexPolicy(agentHome, { codex_runner_model: parsed.model === "default" ? "" : parsed.model });
       }
@@ -653,9 +653,9 @@ function parseOwnerCallbackData(data) {
   if (dispatch) {
     return { kind: "dispatch", action: dispatch[1], dispatchId: dispatch[2] };
   }
-  const model = String(data || "").match(/^model:(opus|codex):([A-Za-z0-9][A-Za-z0-9._:/-]*|default)$/);
+  const model = String(data || "").match(/^model:(claude|opus|codex):([A-Za-z0-9][A-Za-z0-9._:/-]*|default)$/);
   if (model) {
-    return { kind: "model", agent: model[1], model: model[2] };
+    return { kind: "model", agent: model[1] === "opus" ? "claude" : model[1], model: model[2] };
   }
   return null;
 }
@@ -664,12 +664,17 @@ function modelControlsMarkup() {
   return {
     inline_keyboard: [
       [
-        { text: "Opus: Sonnet", callback_data: "model:opus:sonnet" },
-        { text: "Opus: Opus", callback_data: "model:opus:opus" },
+        { text: "Claude Default", callback_data: "model:claude:default" },
+        { text: "Sonnet 4.6", callback_data: "model:claude:sonnet" },
+        { text: "Opus 4.8", callback_data: "model:claude:opus" },
       ],
       [
-        { text: "Codex: Default", callback_data: "model:codex:default" },
-        { text: "Codex: gpt-5-codex", callback_data: "model:codex:gpt-5-codex" },
+        { text: "Codex Default", callback_data: "model:codex:default" },
+        { text: "GPT-5.5", callback_data: "model:codex:gpt-5.5" },
+      ],
+      [
+        { text: "GPT-5.4", callback_data: "model:codex:gpt-5.4" },
+        { text: "GPT-5.4 mini", callback_data: "model:codex:gpt-5.4-mini" },
       ],
     ],
   };
@@ -683,12 +688,18 @@ function formatTelegramModelStatus(agentHome) {
   const remainingText = budget === Number.MAX_SAFE_INTEGER ? "n/a" : String(status.today.remaining_tokens);
   return [
     "Local accounting only; not official account usage.",
-    `opus_model=${policy.exchange_runner_model}`,
-    `codex_model=${policy.codex_runner_model || "default"}`,
+    `claude_model=${policy.exchange_runner_model || "default"} (${claudeModelLabel(policy.exchange_runner_model)})`,
+    `codex_model=${policy.codex_runner_model || "default"}${policy.codex_runner_model ? "" : " (effective=gpt-5.5)"}`,
     `local_tokens_today=${status.today.tokens}`,
     `local_budget=${budgetText}`,
     `local_remaining=${remainingText}`,
   ].join("\n");
+}
+
+function claudeModelLabel(model) {
+  if (model === "sonnet") return "Sonnet 4.6";
+  if (model === "opus") return "Opus 4.8";
+  return "Claude Code default";
 }
 
 function isGatewayText(text, agentHome) {

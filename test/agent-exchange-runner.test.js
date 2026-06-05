@@ -346,6 +346,18 @@ test("buildClaudeInvocation pins model/settings/add-dir and never includes raw m
   assert.match(invocation.prompt, /Node will record it in the mailbox/);
 });
 
+test("buildClaudeInvocation omits --model for Claude default", () => {
+  const invocation = buildClaudeInvocation({
+    repoDir: REPO,
+    agentHome: "/tmp/agent",
+    msgId: "msg_default_model",
+    model: "",
+    settingsPath: "/cfg/opus-runner-settings.json",
+  });
+
+  assert.equal(invocation.args.includes("--model"), false);
+});
+
 test("exchange runner never passes raw message text into the spawn argv", async () => {
   const agentHome = makeAgentHome("codex-agent-runner-noleak-");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });

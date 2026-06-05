@@ -65,11 +65,13 @@ export function makeOpusEditRunner({ agentHome, settingsPath = defaultOpusEditSe
     // exactly what made resume fail ("No conversation found").
     const baseArgs = [
       "-p",
-      "--model", String(model),
       "--output-format", "json",
       "--add-dir", repoDir,
       "--settings", settingsPath,
     ];
+    if (model) {
+      baseArgs.push("--model", String(model));
+    }
     const buildArgs = (resumeId) => [
       ...baseArgs,
       ...(resumeId ? ["--resume", String(resumeId)] : []),
@@ -335,12 +337,14 @@ export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settin
 
   const args = [
     "-p",
-    "--model", String(model),
     "--output-format", "json",
     "--max-turns", String(maxTurns),
     "--add-dir", repoDir,
     "--settings", settingsPath,
   ];
+  if (model) {
+    args.push("--model", String(model));
+  }
   // Persist sessions (no --no-session-persistence) so a later --resume can
   // actually find them; storing an id from a non-persisted run is what broke
   // resume with "No conversation found".
