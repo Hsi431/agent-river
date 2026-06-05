@@ -108,6 +108,10 @@ test("gateway parses status and submit commands", () => {
     command: "agent_config",
     args: { key: "opus-model", value: "sonnet" },
   });
+  assert.deepEqual(parseGatewayCommand("agent config opus-model default"), {
+    command: "agent_config",
+    args: { key: "opus-model", value: "" },
+  });
   assert.deepEqual(parseGatewayCommand("agent config codex-model gpt-5-codex"), {
     command: "agent_config",
     args: { key: "codex-model", value: "gpt-5-codex" },
@@ -115,6 +119,10 @@ test("gateway parses status and submit commands", () => {
   assert.deepEqual(parseGatewayCommand("agent config codex-model default"), {
     command: "agent_config",
     args: { key: "codex-model", value: "" },
+  });
+  assert.deepEqual(parseGatewayCommand("agent config codex-model gpt-5.4-mini"), {
+    command: "agent_config",
+    args: { key: "codex-model", value: "gpt-5.4-mini" },
   });
   assert.deepEqual(parseGatewayCommand("agent config codex-model --foo"), {
     command: "invalid_config",
@@ -189,7 +197,7 @@ test("gateway config sets Codex model and models reports local-only status", asy
   const setCodex = await handleGatewayMessage({
     agentHome,
     userId: "user-allowed",
-    text: "agent config codex-model gpt-5-codex",
+    text: "agent config codex-model gpt-5.4-mini",
   });
   const setOpus = await handleGatewayMessage({
     agentHome,
@@ -200,6 +208,11 @@ test("gateway config sets Codex model and models reports local-only status", asy
     agentHome,
     userId: "user-allowed",
     text: "agent models",
+  });
+  const resetOpus = await handleGatewayMessage({
+    agentHome,
+    userId: "user-allowed",
+    text: "agent config opus-model default",
   });
   const resetCodex = await handleGatewayMessage({
     agentHome,
@@ -213,16 +226,19 @@ test("gateway config sets Codex model and models reports local-only status", asy
   });
 
   assert.equal(setCodex.ok, true);
-  assert.match(setCodex.reply, /Codex runner model set to: gpt-5-codex/);
+  assert.match(setCodex.reply, /Codex runner model set to: gpt-5\.4-mini/);
   assert.equal(setOpus.ok, true);
   assert.match(models.reply, /Local accounting only/);
-  assert.match(models.reply, /opus_model=opus/);
-  assert.match(models.reply, /codex_model=gpt-5-codex/);
+  assert.match(models.reply, /claude_model=opus \(Opus 4\.8\)/);
+  assert.match(models.reply, /codex_model=gpt-5\.4-mini/);
   assert.match(models.reply, /local_budget=disabled/);
-  assert.doesNotMatch(models.reply, /Plus|Claude|quota|%/i);
+  assert.doesNotMatch(models.reply, /Plus|quota|%/i);
+  assert.equal(resetOpus.ok, true);
+  assert.match(resetOpus.reply, /reset to default/);
   assert.equal(resetCodex.ok, true);
   assert.match(resetCodex.reply, /reset to default/);
-  assert.match(resetModels.reply, /codex_model=default/);
+  assert.match(resetModels.reply, /claude_model=default \(Claude Code default\)/);
+  assert.match(resetModels.reply, /codex_model=default \(effective=gpt-5\.5\)/);
 });
 
 test("gateway routes exchange ask only to enabled agents and redacts stored text", async () => {

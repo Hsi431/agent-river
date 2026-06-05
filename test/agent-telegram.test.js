@@ -90,8 +90,10 @@ test("telegram adapter adds model buttons only for owner agent models", async ()
     update: telegramUpdate({ fromId: 999, chatId: 456, text: "agent models" }),
   });
 
-  assert.equal(owner.payload.reply_markup.inline_keyboard[0][0].callback_data, "model:opus:sonnet");
-  assert.equal(owner.payload.reply_markup.inline_keyboard[1][1].callback_data, "model:codex:gpt-5-codex");
+  assert.equal(owner.payload.reply_markup.inline_keyboard[0][0].callback_data, "model:claude:default");
+  assert.equal(owner.payload.reply_markup.inline_keyboard[0][2].callback_data, "model:claude:opus");
+  assert.equal(owner.payload.reply_markup.inline_keyboard[1][1].callback_data, "model:codex:gpt-5.5");
+  assert.equal(owner.payload.reply_markup.inline_keyboard[2][1].callback_data, "model:codex:gpt-5.4-mini");
   assert.equal(allowedNonOwner.payload.reply_markup, undefined);
 });
 
@@ -579,15 +581,15 @@ test("telegram model callback updates config and sends refreshed model status", 
     agentHome,
     token: "test-token",
     fetchImpl: fakeTelegramFetch(fetchCalls, [
-      telegramCallbackUpdate({ updateId: 32, fromId: 123, chatId: 456, data: "model:codex:gpt-5-codex" }),
+      telegramCallbackUpdate({ updateId: 32, fromId: 123, chatId: 456, data: "model:codex:gpt-5.4-mini" }),
     ]),
   });
   const sent = fetchCalls.find((call) => call.method === "sendMessage");
 
   assert.equal(result.handled[0].reason, "model_callback");
-  assert.equal(getTelegramCodexPolicy(agentHome).codex_runner_model, "gpt-5-codex");
+  assert.equal(getTelegramCodexPolicy(agentHome).codex_runner_model, "gpt-5.4-mini");
   assert.equal(fetchCalls.find((call) => call.method === "answerCallbackQuery").body.text, "Received.");
-  assert.match(sent.body.text, /codex_model=gpt-5-codex/);
+  assert.match(sent.body.text, /codex_model=gpt-5\.4-mini/);
   assert.equal(sent.body.reply_markup.inline_keyboard[1][0].callback_data, "model:codex:default");
 
   await pollTelegramOnce({
@@ -610,7 +612,7 @@ test("telegram model callback from non-owner is denied and does not mutate confi
     agentHome,
     token: "test-token",
     fetchImpl: fakeTelegramFetch(fetchCalls, [
-      telegramCallbackUpdate({ updateId: 34, fromId: 999, chatId: 456, data: "model:opus:opus" }),
+      telegramCallbackUpdate({ updateId: 34, fromId: 999, chatId: 456, data: "model:claude:opus" }),
     ]),
   });
 
@@ -3206,6 +3208,18 @@ test("codex runner model config can reset to default and rejects leading dash", 
   assert.throws(
     () => setTelegramCodexPolicy(agentHome, { codex_runner_model: "--foo" }),
     /invalid characters/,
+  );
+});
+
+test("Claude runner model config can reset to default and rejects invalid values", () => {
+  const agentHome = makeAgentHome("codex-agent-claude-model-config-");
+  setTelegramCodexPolicy(agentHome, { exchange_runner_model: "opus" });
+  assert.equal(getTelegramCodexPolicy(agentHome).exchange_runner_model, "opus");
+  setTelegramCodexPolicy(agentHome, { exchange_runner_model: "" });
+  assert.equal(getTelegramCodexPolicy(agentHome).exchange_runner_model, "");
+  assert.throws(
+    () => setTelegramCodexPolicy(agentHome, { exchange_runner_model: "opus-4.6" }),
+    /default, sonnet, or opus/,
   );
 });
 

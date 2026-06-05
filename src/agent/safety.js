@@ -267,7 +267,7 @@ export function setTelegramCodexPolicy(agentHome, patch = {}) {
     next.exchange_runner_enabled = parseBool(patch.exchange_runner_enabled, "exchange-runner-enabled");
   }
   if (patch.exchange_runner_model !== undefined) {
-    next.exchange_runner_model = requireNonEmptyString(patch.exchange_runner_model, "exchange-runner-model");
+    next.exchange_runner_model = requireClaudeModel(patch.exchange_runner_model, "exchange-runner-model");
   }
   if (patch.codex_runner_model !== undefined) {
     next.codex_runner_model = requireModelId(patch.codex_runner_model, "codex-runner-model");
@@ -333,7 +333,7 @@ function normalizeTelegramCodexPolicy(value) {
     exchange_notify_chat_id: typeof v.exchange_notify_chat_id === "string" && v.exchange_notify_chat_id.trim() ? v.exchange_notify_chat_id.trim() : null,
     exchange_notify_max_per_cycle: positiveIntegerOr(v.exchange_notify_max_per_cycle, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_notify_max_per_cycle),
     exchange_runner_enabled: Boolean(v.exchange_runner_enabled),
-    exchange_runner_model: typeof v.exchange_runner_model === "string" && v.exchange_runner_model.trim() ? v.exchange_runner_model.trim() : DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_model,
+    exchange_runner_model: normalizeClaudeModel(v),
     codex_runner_model: typeof v.codex_runner_model === "string" && v.codex_runner_model.trim() && isModelId(v.codex_runner_model)
       ? v.codex_runner_model.trim()
       : DEFAULT_TELEGRAM_CODEX_POLICY.codex_runner_model,
@@ -389,6 +389,28 @@ function requireModelId(value, name) {
 
 function isModelId(value) {
   return /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(String(value || "").trim());
+}
+
+function requireClaudeModel(value, name) {
+  const s = String(value ?? "").trim();
+  if (!s || s === "sonnet" || s === "opus") {
+    return s;
+  }
+  throw new Error(`--${name} must be default, sonnet, or opus`);
+}
+
+function normalizeClaudeModel(value) {
+  if (!Object.hasOwn(value, "exchange_runner_model")) {
+    return DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_model;
+  }
+  const raw = value.exchange_runner_model;
+  if (typeof raw !== "string") {
+    return DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_model;
+  }
+  const model = raw.trim();
+  return model === "sonnet" || model === "opus" || model === ""
+    ? model
+    : DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_model;
 }
 
 function parseBool(value, name) {
