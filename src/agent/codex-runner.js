@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
+import { getTelegramCodexPolicy } from "./safety.js";
 
 // The ONLY module that invokes real `codex exec`. It passes no shell,
 // secret-scans the prompt before invocation, and is injectable so tests never
@@ -11,15 +12,15 @@ import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
 
 const CODEX_TIMEOUT_MS = 120000;
 
-export async function realCodexRunner({ prompt, execFileImpl = execFile, cwd } = {}) {
-  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "read-only" });
+export async function realCodexRunner({ prompt, execFileImpl = execFile, cwd, agentHome } = {}) {
+  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "read-only", agentHome });
 }
 
-export async function realEditCodexRunner({ prompt, execFileImpl = execFile, cwd } = {}) {
-  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "workspace-write" });
+export async function realEditCodexRunner({ prompt, execFileImpl = execFile, cwd, agentHome } = {}) {
+  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "workspace-write", agentHome });
 }
 
-async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd, sandbox } = {}) {
+async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd, sandbox, agentHome } = {}) {
   const promptText = String(prompt || "");
   if (!promptText.trim()) {
     throw new Error("Codex prompt is empty");
@@ -29,7 +30,8 @@ async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd
   }
   const outFile = path.join(os.tmpdir(), `codex-reply-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   try {
-    const run = await runCodexExec({ prompt: promptText, outFile, execFileImpl, cwd, sandbox });
+    const model = agentHome ? getTelegramCodexPolicy(agentHome).codex_runner_model : "";
+    const run = await runCodexExec({ prompt: promptText, outFile, execFileImpl, cwd, sandbox, model });
 
     const outRaw = fs.existsSync(outFile) ? fs.readFileSync(outFile) : Buffer.alloc(0);
     const stdoutText = String(run.stdout || "");
@@ -66,7 +68,7 @@ async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd
   }
 }
 
-function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox }) {
+function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox, model }) {
   return new Promise((resolve) => {
     // The prompt is NOT a process argument — it goes on stdin so inbound text is
     // never visible in a process listing (`ps`).
@@ -76,6 +78,9 @@ function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox }) {
       "--skip-git-repo-check",
       "-o", outFile,
     ];
+    if (model) {
+      args.push("--model", String(model));
+    }
     const child = execFileImpl("codex", args, {
       cwd: cwd || process.cwd(),
       timeout: CODEX_TIMEOUT_MS,
@@ -108,8 +113,8 @@ function formatDiag({ outFileBytes, stdoutBytes, stderrBytes, errored, timedOut 
 // fallback when no test runner is injected into runAgentOnce. realCodexRunner
 // throws on exec failure; that throw is handled by runPlanOnlyTask, which
 // transitions the task to failed rather than leaving it planning.
-export async function realPlanRunner({ prompt, task, step, execFileImpl } = {}) {
-  const result = await realCodexRunner({ prompt, execFileImpl, cwd: task?.repo });
+export async function realPlanRunner({ prompt, task, step, execFileImpl, agentHome } = {}) {
+  const result = await realCodexRunner({ prompt, execFileImpl, cwd: task?.repo, agentHome });
   return {
     text: result.text,
     prompt,
@@ -120,8 +125,8 @@ export async function realPlanRunner({ prompt, task, step, execFileImpl } = {}) 
   };
 }
 
-export async function realEditRunner({ prompt, task, step, execFileImpl } = {}) {
-  const result = await realEditCodexRunner({ prompt, execFileImpl, cwd: task?.repo });
+export async function realEditRunner({ prompt, task, step, execFileImpl, agentHome } = {}) {
+  const result = await realEditCodexRunner({ prompt, execFileImpl, cwd: task?.repo, agentHome });
   return {
     text: result.text,
     prompt,

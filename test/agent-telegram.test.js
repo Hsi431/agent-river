@@ -3092,6 +3092,52 @@ test("real codex runner passes the prompt on stdin, not in argv", async () => {
   assert.equal(state.stdinEnded, true);
 });
 
+test("real codex runner passes --model only when configured", async () => {
+  const unsetHome = makeAgentHome("codex-agent-codex-model-unset-");
+  const unset = {};
+  await realCodexRunner({
+    agentHome: unsetHome,
+    prompt: "Reply with exactly: default-model",
+    execFileImpl: captureCodexExec(unset, { writeOut: "ok" }),
+  });
+  assert.equal(unset.args.includes("--model"), false);
+
+  const setHome = makeAgentHome("codex-agent-codex-model-set-");
+  setTelegramCodexPolicy(setHome, { codex_runner_model: "gpt-5-codex" });
+  const configured = {};
+  await realCodexRunner({
+    agentHome: setHome,
+    prompt: "Reply with exactly: configured-model",
+    execFileImpl: captureCodexExec(configured, { writeOut: "ok" }),
+  });
+  const modelIndex = configured.args.indexOf("--model");
+  assert.ok(modelIndex >= 0);
+  assert.equal(configured.args[modelIndex + 1], "gpt-5-codex");
+
+  const edit = {};
+  await realEditRunner({
+    agentHome: setHome,
+    prompt: "Edit and report back.",
+    task: { repo: "/repo/editable" },
+    execFileImpl: captureCodexExec(edit, { writeOut: "edited" }),
+  });
+  const editModelIndex = edit.args.indexOf("--model");
+  assert.ok(editModelIndex >= 0);
+  assert.equal(edit.args[editModelIndex + 1], "gpt-5-codex");
+});
+
+test("codex runner model config can reset to default and rejects leading dash", () => {
+  const agentHome = makeAgentHome("codex-agent-codex-model-config-");
+  setTelegramCodexPolicy(agentHome, { codex_runner_model: "gpt-5-codex" });
+  assert.equal(getTelegramCodexPolicy(agentHome).codex_runner_model, "gpt-5-codex");
+  setTelegramCodexPolicy(agentHome, { codex_runner_model: "" });
+  assert.equal(getTelegramCodexPolicy(agentHome).codex_runner_model, "");
+  assert.throws(
+    () => setTelegramCodexPolicy(agentHome, { codex_runner_model: "--foo" }),
+    /invalid characters/,
+  );
+});
+
 test("real edit runner uses workspace-write sandbox", async () => {
   const state = {};
   const result = await realEditRunner({

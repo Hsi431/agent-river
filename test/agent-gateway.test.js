@@ -20,6 +20,10 @@ test("gateway parses status and submit commands", () => {
     command: "agent_status",
     args: { id: "task_123" },
   });
+  assert.deepEqual(parseGatewayCommand("agent models"), {
+    command: "agent_models",
+    args: {},
+  });
   assert.deepEqual(parseGatewayCommand("agent help"), {
     command: "agent_help",
     args: {},
@@ -104,6 +108,22 @@ test("gateway parses status and submit commands", () => {
     command: "agent_config",
     args: { key: "opus-model", value: "sonnet" },
   });
+  assert.deepEqual(parseGatewayCommand("agent config codex-model gpt-5-codex"), {
+    command: "agent_config",
+    args: { key: "codex-model", value: "gpt-5-codex" },
+  });
+  assert.deepEqual(parseGatewayCommand("agent config codex-model default"), {
+    command: "agent_config",
+    args: { key: "codex-model", value: "" },
+  });
+  assert.deepEqual(parseGatewayCommand("agent config codex-model --foo"), {
+    command: "invalid_config",
+    args: {},
+  });
+  assert.deepEqual(parseGatewayCommand("agent config codex-model bad model"), {
+    command: "invalid_config",
+    args: {},
+  });
   assert.deepEqual(parseGatewayCommand("agent config opus-model gpt4"), {
     command: "invalid_config",
     args: {},
@@ -159,6 +179,50 @@ test("gateway help returns command usage", async () => {
   assert.equal(audit[0].command, "agent_help");
   assert.equal(audit[0].allowed, true);
   assert.equal(audit[0].ok, true);
+});
+
+test("gateway config sets Codex model and models reports local-only status", async () => {
+  const agentHome = makeAgentHome("codex-agent-gateway-models-");
+  allowGatewayUser(agentHome, "user-allowed");
+  setDailyTokenBudget(agentHome, "disabled");
+
+  const setCodex = await handleGatewayMessage({
+    agentHome,
+    userId: "user-allowed",
+    text: "agent config codex-model gpt-5-codex",
+  });
+  const setOpus = await handleGatewayMessage({
+    agentHome,
+    userId: "user-allowed",
+    text: "agent config opus-model opus",
+  });
+  const models = await handleGatewayMessage({
+    agentHome,
+    userId: "user-allowed",
+    text: "agent models",
+  });
+  const resetCodex = await handleGatewayMessage({
+    agentHome,
+    userId: "user-allowed",
+    text: "agent config codex-model default",
+  });
+  const resetModels = await handleGatewayMessage({
+    agentHome,
+    userId: "user-allowed",
+    text: "agent models",
+  });
+
+  assert.equal(setCodex.ok, true);
+  assert.match(setCodex.reply, /Codex runner model set to: gpt-5-codex/);
+  assert.equal(setOpus.ok, true);
+  assert.match(models.reply, /Local accounting only/);
+  assert.match(models.reply, /opus_model=opus/);
+  assert.match(models.reply, /codex_model=gpt-5-codex/);
+  assert.match(models.reply, /local_budget=disabled/);
+  assert.doesNotMatch(models.reply, /Plus|Claude|quota|%/i);
+  assert.equal(resetCodex.ok, true);
+  assert.match(resetCodex.reply, /reset to default/);
+  assert.match(resetModels.reply, /codex_model=default/);
 });
 
 test("gateway routes exchange ask only to enabled agents and redacts stored text", async () => {
