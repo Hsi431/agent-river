@@ -186,6 +186,7 @@ const DEFAULT_TELEGRAM_CODEX_POLICY = {
   exchange_notify_max_per_cycle: 3,
   exchange_runner_enabled: false,
   exchange_runner_model: "sonnet",
+  codex_runner_model: "",
   exchange_runner_max_attempts: 2,
   exchange_runner_timeout_seconds: 600,
   exchange_runner_daily_max: 20,
@@ -268,6 +269,9 @@ export function setTelegramCodexPolicy(agentHome, patch = {}) {
   if (patch.exchange_runner_model !== undefined) {
     next.exchange_runner_model = requireNonEmptyString(patch.exchange_runner_model, "exchange-runner-model");
   }
+  if (patch.codex_runner_model !== undefined) {
+    next.codex_runner_model = requireModelId(patch.codex_runner_model, "codex-runner-model");
+  }
   if (patch.exchange_runner_max_attempts !== undefined) {
     next.exchange_runner_max_attempts = requirePositiveInteger(patch.exchange_runner_max_attempts, "exchange-runner-max-attempts");
   }
@@ -330,6 +334,9 @@ function normalizeTelegramCodexPolicy(value) {
     exchange_notify_max_per_cycle: positiveIntegerOr(v.exchange_notify_max_per_cycle, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_notify_max_per_cycle),
     exchange_runner_enabled: Boolean(v.exchange_runner_enabled),
     exchange_runner_model: typeof v.exchange_runner_model === "string" && v.exchange_runner_model.trim() ? v.exchange_runner_model.trim() : DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_model,
+    codex_runner_model: typeof v.codex_runner_model === "string" && v.codex_runner_model.trim() && isModelId(v.codex_runner_model)
+      ? v.codex_runner_model.trim()
+      : DEFAULT_TELEGRAM_CODEX_POLICY.codex_runner_model,
     exchange_runner_max_attempts: positiveIntegerOr(v.exchange_runner_max_attempts, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_max_attempts),
     exchange_runner_timeout_seconds: positiveIntegerOr(v.exchange_runner_timeout_seconds, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_timeout_seconds),
     exchange_runner_daily_max: nonNegativeIntegerOr(v.exchange_runner_daily_max, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_daily_max),
@@ -367,6 +374,21 @@ function requireNonEmptyString(value, name) {
     throw new Error(`--${name} must be a non-empty value`);
   }
   return s;
+}
+
+function requireModelId(value, name) {
+  const s = String(value ?? "").trim();
+  if (!s) {
+    return "";
+  }
+  if (!isModelId(s)) {
+    throw new Error(`--${name} contains invalid characters`);
+  }
+  return s;
+}
+
+function isModelId(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(String(value || "").trim());
 }
 
 function parseBool(value, name) {

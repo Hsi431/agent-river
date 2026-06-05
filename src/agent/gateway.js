@@ -108,6 +108,9 @@ export function parseGatewayCommand(text) {
   if (tokens[1] === "status" && tokens.length === 3 && isTaskId(tokens[2])) {
     return { command: "agent_status", args: { id: tokens[2] || null } };
   }
+  if (tokens[1] === "models" && tokens.length === 2) {
+    return { command: "agent_models", args: {} };
+  }
   if (tokens[1] === "run" && tokens.length === 2) {
     return { command: "invalid_run", args: {} };
   }
@@ -178,7 +181,7 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
           agentHome,
           memoryStateHome,
           taskId: parsed.args.id,
-          runner: runner || ((args) => realPlanRunner({ ...args, execFileImpl })),
+          runner: runner || ((args) => realPlanRunner({ ...args, execFileImpl, agentHome })),
         })),
         taskId: parsed.args.id,
       };
@@ -266,14 +269,20 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
         setTelegramCodexPolicy(agentHome, { exchange_runner_model: value });
         return { ok: true, reply: `Opus runner model set to: ${value}` };
       }
+      if (key === "codex-model") {
+        setTelegramCodexPolicy(agentHome, { codex_runner_model: value });
+        return { ok: true, reply: value ? `Codex runner model set to: ${value}` : "Codex runner model reset to default." };
+      }
       return { ok: false, reply: "Unknown config key." };
     }
+    case "agent_models":
+      return { ok: true, reply: formatAgentModels({ policy: getTelegramCodexPolicy(agentHome), status: getAgentStatus({ agentHome }) }) };
     case "empty":
       return { ok: false, reply: "Empty command." };
     case "invalid_run":
       return { ok: false, reply: "Usage: agent run task_id." };
     case "invalid_config":
-      return { ok: false, reply: "Usage: agent config opus-model sonnet|opus" };
+      return { ok: false, reply: "Usage: agent config opus-model sonnet|opus OR agent config codex-model <model>" };
     default:
       return { ok: false, reply: "Unknown command." };
   }
@@ -345,6 +354,8 @@ function formatAgentHelp() {
     "  agent run task_...",
     "  agent thread msg_...        → show exchange thread",
     "  agent config opus-model sonnet|opus",
+    "  agent config codex-model <model|default>",
+    "  agent models                → show current runner models/local usage",
   ].join("\n");
 }
 
@@ -433,10 +444,17 @@ function hasUnexpectedSubmitTokens(tokens, repoIndex, requestIndex) {
 }
 
 const VALID_RUNNER_MODELS = new Set(["sonnet", "opus"]);
+const VALID_CODEX_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
 function parseConfigCommand(tokens) {
   if (tokens[0] === "opus-model" && tokens.length === 2 && VALID_RUNNER_MODELS.has(tokens[1])) {
     return { command: "agent_config", args: { key: "opus-model", value: tokens[1] } };
+  }
+  if (tokens[0] === "codex-model" && tokens.length === 2 && /^(?:default|reset)$/i.test(tokens[1])) {
+    return { command: "agent_config", args: { key: "codex-model", value: "" } };
+  }
+  if (tokens[0] === "codex-model" && tokens.length === 2 && VALID_CODEX_MODEL.test(tokens[1])) {
+    return { command: "agent_config", args: { key: "codex-model", value: tokens[1] } };
   }
   return { command: "invalid_config", args: {} };
 }
@@ -509,6 +527,20 @@ function formatAgentStatus(status) {
     `kill_switch=${status.safety.config.kill_switch}`,
     `remaining_tokens=${status.safety.today.remaining_tokens}`,
   ].join(" ");
+}
+
+function formatAgentModels({ policy, status }) {
+  const budget = status.safety.config.daily_token_budget;
+  const budgetText = budget === Number.MAX_SAFE_INTEGER ? "disabled" : String(budget);
+  const remainingText = budget === Number.MAX_SAFE_INTEGER ? "n/a" : String(status.safety.today.remaining_tokens);
+  return [
+    "Local accounting only; not official account usage.",
+    `opus_model=${policy.exchange_runner_model}`,
+    `codex_model=${policy.codex_runner_model || "default"}`,
+    `local_tokens_today=${status.safety.today.tokens}`,
+    `local_budget=${budgetText}`,
+    `local_remaining=${remainingText}`,
+  ].join("\n");
 }
 
 function countTasks(tasks) {

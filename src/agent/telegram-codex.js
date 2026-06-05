@@ -210,7 +210,7 @@ async function processInboxEntry({
         return summary({ agentHome, received, inbox_id: latest.id, reply_id: reply.id, queued: true, reason: "owner_action_no_repo", sent: sendResult.replies });
       }
       const created = createTask({ agentHome, repo: policy.default_repo, request: latest.text, mode: "plan", source: "telegram", requester: "owner" });
-      const planRunner = runner || ((args) => realPlanRunner({ ...args, execFileImpl }));
+      const planRunner = runner || ((args) => realPlanRunner({ ...args, execFileImpl, agentHome }));
       let task = created;
       try {
         const run = await runAgentOnce({ agentHome, memoryStateHome, runner: planRunner, taskId: created.id, execFileImpl });
@@ -253,7 +253,7 @@ async function processInboxEntry({
     return summary({ agentHome, received, inbox_id: latest.id, reply_id: null, queued: false, reason: "prompt_secret", sent: received.replies });
   }
 
-  const activeRunner = runner || ((args) => realCodexRunner({ ...args, execFileImpl }));
+  const activeRunner = runner || ((args) => realCodexRunner({ ...args, execFileImpl, agentHome }));
   const { text: replyText, tokens: usageTokens } = normalizeRunnerResult(await activeRunner({ prompt, inbox: latest }));
 
   // Prefer real Codex token usage when the runner parsed it; otherwise estimate.
@@ -415,8 +415,8 @@ async function handleOwnerTaskCommand({ agentHome, poll, memoryStateHome, execFi
     const taskRunner = runner || (approvedTask.executor === "opus"
       ? undefined
       : ((args) => (approvedTask.mode === "edit"
-        ? realEditRunner({ ...args, execFileImpl })
-        : realPlanRunner({ ...args, execFileImpl }))));
+        ? realEditRunner({ ...args, execFileImpl, agentHome })
+        : realPlanRunner({ ...args, execFileImpl, agentHome }))));
     let task = approvedTask;
     try {
       const run = await runAgentOnce({ agentHome, memoryStateHome, runner: taskRunner, taskId: taskCommand.taskId, execFileImpl });
