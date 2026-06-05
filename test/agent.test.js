@@ -7,6 +7,7 @@ import { runAgentCli } from "../src/agent/cli.js";
 import { createChatDraft, createChatHandoff, enqueueChatMessage, queueChatReply } from "../src/agent/chat.js";
 import { codexReplyOnce } from "../src/agent/codex-reply.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "../src/agent/orchestrator.js";
+import { runPlanStep } from "../src/agent/worker.js";
 import { readRuns, transitionTask, writeTask } from "../src/agent/tasks.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { checkSafety, setDailyTokenBudget, setKillSwitch } from "../src/agent/safety.js";
@@ -87,6 +88,30 @@ test("agent run advances queued plan task to done and appends run log", async ()
   assert.equal(status.runs[0].step, "planning");
   assert.equal(readJsonl(agentPaths(agentHome).cost).length, 1);
   assert.ok(getAgentStatus({ agentHome }).safety.today.tokens > 0);
+});
+
+test("plan prompt uses Traditional Chinese for owner-facing dispatch reports", async () => {
+  const task = {
+    id: "task_lang",
+    repo: "/repo/agent-river",
+    request: "Report the Opus review result to the owner.",
+    source: "dispatch",
+    chat_id: "123",
+  };
+  let prompt = "";
+
+  await runPlanStep({
+    task,
+    contextBlock: "context",
+    runner: async (args) => {
+      prompt = args.prompt;
+      return { text: "ok", sessionPath: null, exit: 0, tokens: 1 };
+    },
+  });
+
+  assert.match(prompt, /Reply in the owner's language/);
+  assert.match(prompt, /Traditional Chinese/);
+  assert.match(prompt, /return that owner-facing report directly/i);
 });
 
 test("agent run skips tasks pending approval until approved", async () => {
