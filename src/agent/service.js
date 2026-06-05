@@ -291,16 +291,14 @@ function fileDrift(filePath, expected) {
 
 export function buildOpusRunnerSettings() {
   return {
-    $comment: "Least-privilege settings for the headless Opus exchange auto-runner. Read-only repo + /tmp scratch + exchange/git-read/test commands only. No file edits, no commits/push, no arbitrary shell. In `claude -p` mode any tool not listed here is auto-denied.",
+    $comment: "Least-privilege settings for the headless Opus exchange auto-runner. Read-only repo + exchange/git-read/test commands only. Node records the mailbox reply after Claude returns final text. No file edits, no commits/push, no arbitrary shell. In `claude -p` mode any tool not listed here is auto-denied.",
     permissions: {
       defaultMode: "default",
       allow: [
         "Read",
         "Grep",
         "Glob",
-        "Write",
         `Bash(node bin/codex-agent.js exchange-thread:*)`,
-        `Bash(node bin/codex-agent.js exchange-reply:*)`,
         `Bash(node bin/codex-agent.js exchange-status:*)`,
         `Bash(node bin/codex-agent.js exchange-inbox:*)`,
         `Bash(node bin/codex-agent.js exchange-runner-session-status:*)`,
@@ -316,7 +314,7 @@ export function buildOpusRunnerSettings() {
         "Edit",
         "MultiEdit",
         "NotebookEdit",
-        `Write(${path.join(os.homedir(), "/**")})`,
+        "Write",
         "Bash(git commit:*)",
         "Bash(git push:*)",
         "Bash(git reset:*)",
