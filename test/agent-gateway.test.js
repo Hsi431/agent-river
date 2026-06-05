@@ -78,15 +78,23 @@ test("gateway parses status and submit commands", () => {
   });
   assert.deepEqual(parseGatewayCommand("@opus Review this patch"), {
     command: "exchange_ask",
-    args: { agent: "opus", text: "Review this patch", threadId: null },
+    args: { agent: "opus", text: "Review this patch", threadId: null, displayAgent: null },
+  });
+  assert.deepEqual(parseGatewayCommand("@claude Review this patch"), {
+    command: "exchange_ask",
+    args: { agent: "opus", text: "Review this patch", threadId: null, displayAgent: "Claude" },
+  });
+  assert.deepEqual(parseGatewayCommand("claude: Review this patch"), {
+    command: "exchange_ask",
+    args: { agent: "opus", text: "Review this patch", threadId: null, displayAgent: "Claude" },
   });
   assert.deepEqual(parseGatewayCommand("@opus Review this patch\nThen propose a dispatch."), {
     command: "exchange_ask",
-    args: { agent: "opus", text: "Review this patch\nThen propose a dispatch.", threadId: null },
+    args: { agent: "opus", text: "Review this patch\nThen propose a dispatch.", threadId: null, displayAgent: null },
   });
   assert.deepEqual(parseGatewayCommand("opus: Review this patch"), {
     command: "exchange_ask",
-    args: { agent: "opus", text: "Review this patch", threadId: null },
+    args: { agent: "opus", text: "Review this patch", threadId: null, displayAgent: null },
   });
   assert.deepEqual(parseGatewayCommand("@opus inbox"), {
     command: "exchange_inbox",
@@ -261,7 +269,7 @@ test("gateway routes exchange ask only to enabled agents and redacts stored text
   assert.equal(denied.ok, false);
   assert.match(denied.reply, /not enabled/);
   assert.equal(allowed.ok, true);
-  assert.match(allowed.reply, /Opus[\s\S]*msg_/);
+  assert.match(allowed.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(messages.length, 1);
   assert.equal(messages[0].from, "codex");
   assert.equal(messages[0].to, "opus");
@@ -297,7 +305,7 @@ test("gateway routes exchange shortcut ask and reads", async () => {
   const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
 
   assert.equal(sent.ok, true);
-  assert.match(sent.reply, /Opus[\s\S]*msg_/);
+  assert.match(sent.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(messages[0].text, "Review the shortcut path");
   assert.match(inbox.reply, /Exchange inbox for opus: 0/);
   assert.match(replies.reply, /Exchange replies for codex: 1/);
@@ -314,9 +322,35 @@ test("gateway @opus exchange ask triggers the runner in-process", async () => {
   const result = await handleGatewayMessage({ agentHome, userId: "user-allowed", text: "@opus Review this", runnerTrigger });
 
   assert.equal(result.ok, true);
-  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(result.runner_triggered, true);
   assert.equal(triggeredWith?.agentHome, agentHome);
+});
+
+test("gateway @claude ack uses Claude label while routing to Opus mailbox", async () => {
+  const agentHome = makeAgentHome("codex-agent-gateway-claude-alias-ack-");
+  allowGatewayUser(agentHome, "user-allowed");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_model: "opus" });
+
+  const result = await handleGatewayMessage({ agentHome, userId: "user-allowed", text: "@claude Review this", runnerTrigger: () => {} });
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+
+  assert.equal(result.ok, true);
+  assert.match(result.reply, /Claude 收到[\s\S]*msg_/);
+  assert.equal(messages[0].to, "opus");
+});
+
+test("gateway @opus ack reflects the selected Claude runner model", async () => {
+  const agentHome = makeAgentHome("codex-agent-gateway-opus-model-ack-");
+  allowGatewayUser(agentHome, "user-allowed");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_model: "opus" });
+
+  const result = await handleGatewayMessage({ agentHome, userId: "user-allowed", text: "@opus Review this", runnerTrigger: () => {} });
+
+  assert.equal(result.ok, true);
+  assert.match(result.reply, /Opus 4\.8 收到[\s\S]*msg_/);
 });
 
 test("gateway @opus ask still succeeds when the runner trigger throws", async () => {
@@ -328,7 +362,7 @@ test("gateway @opus ask still succeeds when the runner trigger throws", async ()
   const result = await handleGatewayMessage({ agentHome, userId: "user-allowed", text: "@opus Review this", runnerTrigger });
 
   assert.equal(result.ok, true);
-  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(result.runner_triggered, false);
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });
@@ -419,7 +453,7 @@ test("owner @opus review request falls through to the read-only mailbox lane", a
 
   const result = await handleGatewayMessage({ agentHome, userId: "123", text: "@opus review the latest patch", runnerTrigger: () => {} });
 
-  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(listTasks(agentHome).length, 0);
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });
@@ -437,7 +471,7 @@ test("owner @opus read-only review of a commit falls through to the mailbox lane
     runnerTrigger: () => {},
   });
 
-  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(listTasks(agentHome).length, 0);
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });
@@ -455,7 +489,7 @@ test("owner @opus read-only review of dangerous-word targets falls through to th
     runnerTrigger: () => {},
   });
 
-  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(listTasks(agentHome).length, 0);
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });
@@ -473,7 +507,7 @@ test("owner @opus explicit read-only boundary does not create an edit task", asy
     runnerTrigger: () => {},
   });
 
-  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(listTasks(agentHome).length, 0);
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });
@@ -486,7 +520,7 @@ test("non-owner @opus edit intent does not create a task (read-only lane)", asyn
 
   const result = await handleGatewayMessage({ agentHome, userId: "999", text: "@opus fix the bug in utils.js", runnerTrigger: () => {} });
 
-  assert.match(result.reply, /Opus[\s\S]*msg_/);
+  assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(listTasks(agentHome).length, 0);
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });

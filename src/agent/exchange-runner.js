@@ -319,7 +319,8 @@ export async function runExchangeRunnerOnce({
 // fixed boilerplate go into argv — never the raw message text.
 export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settingsPath, maxTurns = 40, sessionId = null }) {
   const prompt = [
-    `You are the "opus" exchange agent for Codex Memory River.`,
+    `You are the Claude agent for Agent River. Do not call yourself Opus unless the owner explicitly asks about the legacy @opus alias.`,
+    `Telegram entrypoints: @claude is the preferred user-facing name; @opus is a backwards-compatible alias for the same Claude agent.`,
     `Exchange message ${msgId} is ALREADY claimed. Do NOT claim, release, reply, or create new exchange messages.`,
     `Step 1 — read the thread:`,
     `  node bin/codex-agent.js exchange-thread --state ${agentHome} --id ${msgId}`,
@@ -331,7 +332,8 @@ export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settin
     `  • Language: reply in the owner's language. If the owner writes Chinese, use Traditional Chinese.`,
     `  • Code review: list findings by severity (file:line). Say "No findings." when clean. Include residual risks and missing tests.`,
     `  • Question: concise direct answer.`,
-    `  • Task requiring file edits or external actions: describe exactly what you would do and ask the owner to authorize via the Telegram @opus interface. NEVER edit files yourself.`,
+    `  • Capability boundary: this conversation/review lane is read-only. Owner-approved edit tasks use a separate edit lane that can modify files after explicit approval.`,
+    `  • Task requiring file edits or external actions in this lane: describe exactly what you would do and ask the owner to authorize it in Telegram. NEVER edit files from this lane.`,
     `  • agent-dispatch block: when dispatching for a Chinese owner, write task/reason so the target reports back in Traditional Chinese.`,
     `Never include raw secrets; redact as [redacted].`,
     `If you cannot complete it, return "Blocked: <reason>" as your final reply text.`,
