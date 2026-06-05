@@ -75,6 +75,26 @@ test("telegram adapter keeps chat id separate from allowlisted user id", async (
   assert.equal(result.payload.chat_id, -456);
 });
 
+test("telegram adapter adds model buttons only for owner agent models", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-model-buttons-");
+  allowGatewayUser(agentHome, "123");
+  allowGatewayUser(agentHome, "999");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true });
+
+  const owner = await handleTelegramUpdate({
+    agentHome,
+    update: telegramUpdate({ fromId: 123, chatId: 456, text: "agent models" }),
+  });
+  const allowedNonOwner = await handleTelegramUpdate({
+    agentHome,
+    update: telegramUpdate({ fromId: 999, chatId: 456, text: "agent models" }),
+  });
+
+  assert.equal(owner.payload.reply_markup.inline_keyboard[0][0].callback_data, "model:opus:sonnet");
+  assert.equal(owner.payload.reply_markup.inline_keyboard[1][1].callback_data, "model:codex:gpt-5-codex");
+  assert.equal(allowedNonOwner.payload.reply_markup, undefined);
+});
+
 test("telegram adapter submits plan tasks through gateway core", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-submit-");
   allowGatewayUser(agentHome, "123");
@@ -547,6 +567,57 @@ test("telegram poll answers missing-chat callbacks without enqueueing", async ()
   assert.equal(audit[0].ok, false);
   assert.equal(audit[0].task_id, "task_missing_chat");
   assert.equal(audit[0].reason, "callback_missing_chat");
+});
+
+test("telegram model callback updates config and sends refreshed model status", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-model-callback-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true });
+  const fetchCalls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: fakeTelegramFetch(fetchCalls, [
+      telegramCallbackUpdate({ updateId: 32, fromId: 123, chatId: 456, data: "model:codex:gpt-5-codex" }),
+    ]),
+  });
+  const sent = fetchCalls.find((call) => call.method === "sendMessage");
+
+  assert.equal(result.handled[0].reason, "model_callback");
+  assert.equal(getTelegramCodexPolicy(agentHome).codex_runner_model, "gpt-5-codex");
+  assert.equal(fetchCalls.find((call) => call.method === "answerCallbackQuery").body.text, "Received.");
+  assert.match(sent.body.text, /codex_model=gpt-5-codex/);
+  assert.equal(sent.body.reply_markup.inline_keyboard[1][0].callback_data, "model:codex:default");
+
+  await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: fakeTelegramFetch(fetchCalls, [
+      telegramCallbackUpdate({ updateId: 33, fromId: 123, chatId: 456, data: "model:codex:default" }),
+    ]),
+  });
+  assert.equal(getTelegramCodexPolicy(agentHome).codex_runner_model, "");
+});
+
+test("telegram model callback from non-owner is denied and does not mutate config", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-model-callback-denied-");
+  allowGatewayUser(agentHome, "999");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", owner_mode_enabled: true });
+  const fetchCalls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: fakeTelegramFetch(fetchCalls, [
+      telegramCallbackUpdate({ updateId: 34, fromId: 999, chatId: 456, data: "model:opus:opus" }),
+    ]),
+  });
+
+  assert.equal(result.handled[0].reason, "callback_not_allowed");
+  assert.equal(getTelegramCodexPolicy(agentHome).exchange_runner_model, "sonnet");
+  assert.equal(fetchCalls.find((call) => call.method === "answerCallbackQuery").body.text, "Not allowed.");
+  assert.equal(fetchCalls.some((call) => call.method === "sendMessage"), false);
 });
 
 test("telegram poll sends pending dispatch approval with inline buttons", async () => {

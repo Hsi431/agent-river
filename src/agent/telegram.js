@@ -7,7 +7,7 @@ import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
 import { enqueueChatMessage, listPendingChatReplies, markChatReplySent } from "./chat.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { agentPaths } from "./paths.js";
-import { getTelegramCodexPolicy, isExchangeAgentEnabled } from "./safety.js";
+import { getSafetyStatus, getTelegramCodexPolicy, isExchangeAgentEnabled, setTelegramCodexPolicy } from "./safety.js";
 import { isOwner, ownerTaskReplyMarkup } from "./owner-mode.js";
 import {
   approveDispatch,
@@ -69,6 +69,9 @@ export async function handleTelegramUpdate({ agentHome, update, memoryStateHome,
       method: "sendMessage",
       chat_id: message.chat.id,
       text: gateway.reply,
+      ...(gateway.command === "agent_models" && isOwner({ user_id: String(message.from.id) }, getTelegramCodexPolicy(agentHome))
+        ? { reply_markup: modelControlsMarkup() }
+        : {}),
       ...(gateway.reply_markup ? { reply_markup: gateway.reply_markup } : {}),
     },
   };
@@ -561,6 +564,42 @@ function handleTelegramCallback({ agentHome, callback }) {
       reason: chat.allowed ? `dispatch_${parsed.action}` : "access_denied",
     };
   }
+  if (parsed.kind === "model") {
+    let notice = "無法更新模型設定。";
+    try {
+      if (parsed.agent === "opus") {
+        setTelegramCodexPolicy(agentHome, { exchange_runner_model: parsed.model });
+      } else {
+        setTelegramCodexPolicy(agentHome, { codex_runner_model: parsed.model === "default" ? "" : parsed.model });
+      }
+      notice = formatTelegramModelStatus(agentHome);
+    } catch {
+      // keep failure notice
+    }
+    const chat = enqueueChatMessage({
+      agentHome,
+      channel: "telegram",
+      userId: String(callback.from.id),
+      chatId: String(chatId),
+      text: `model-${parsed.agent} ${parsed.model}`,
+    });
+    if (chat.allowed) {
+      queueChatReply({ agentHome, inboxId: chat.id, text: notice, source: "model_control", replyMarkup: modelControlsMarkup() });
+    }
+    return {
+      ok: chat.allowed,
+      chat,
+      payload: {
+        method: "answerCallbackQuery",
+        body: {
+          callback_query_id: callback.id,
+          text: chat.allowed ? "Received." : "Access denied.",
+          show_alert: false,
+        },
+      },
+      reason: chat.allowed ? "model_callback" : "access_denied",
+    };
+  }
 
   const chat = enqueueChatMessage({
     agentHome,
@@ -614,7 +653,42 @@ function parseOwnerCallbackData(data) {
   if (dispatch) {
     return { kind: "dispatch", action: dispatch[1], dispatchId: dispatch[2] };
   }
+  const model = String(data || "").match(/^model:(opus|codex):([A-Za-z0-9][A-Za-z0-9._:/-]*|default)$/);
+  if (model) {
+    return { kind: "model", agent: model[1], model: model[2] };
+  }
   return null;
+}
+
+function modelControlsMarkup() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "Opus: Sonnet", callback_data: "model:opus:sonnet" },
+        { text: "Opus: Opus", callback_data: "model:opus:opus" },
+      ],
+      [
+        { text: "Codex: Default", callback_data: "model:codex:default" },
+        { text: "Codex: gpt-5-codex", callback_data: "model:codex:gpt-5-codex" },
+      ],
+    ],
+  };
+}
+
+function formatTelegramModelStatus(agentHome) {
+  const policy = getTelegramCodexPolicy(agentHome);
+  const status = getSafetyStatus(agentHome);
+  const budget = status.config.daily_token_budget;
+  const budgetText = budget === Number.MAX_SAFE_INTEGER ? "disabled" : String(budget);
+  const remainingText = budget === Number.MAX_SAFE_INTEGER ? "n/a" : String(status.today.remaining_tokens);
+  return [
+    "Local accounting only; not official account usage.",
+    `opus_model=${policy.exchange_runner_model}`,
+    `codex_model=${policy.codex_runner_model || "default"}`,
+    `local_tokens_today=${status.today.tokens}`,
+    `local_budget=${budgetText}`,
+    `local_remaining=${remainingText}`,
+  ].join("\n");
 }
 
 function isGatewayText(text, agentHome) {
