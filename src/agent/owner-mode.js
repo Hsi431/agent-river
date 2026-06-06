@@ -1,6 +1,6 @@
-import { appendJsonl } from "codex-memory-river/src/jsonl.js";
-import { shortHash } from "codex-memory-river/src/hash.js";
-import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
+import { appendJsonl } from "../lib/jsonl.js";
+import { shortHash } from "../lib/hash.js";
+import { scanSecrets } from "../lib/secret-scan.js";
 import { agentPaths } from "./paths.js";
 
 export const OWNER_BLOCKED_NOTICE = "這則訊息含敏感或不安全內容，已拒絕處理。";

@@ -59,6 +59,10 @@ Tasks support plan and edit modes. Remote and owner-originated edits are
 approval-gated. The orchestrator advances queued approved tasks, appends run
 records, appends cost records, and records task history transitions.
 
+Memory context is optional. The orchestrator builds no Memory River context by
+default; it only asks the memory adapter for context when memory is enabled in
+policy or a `--memory-state` path is supplied.
+
 Current statuses use the implemented task model (`queued`, `planning`,
 `reporting`, `done`, `failed`) plus the approval field (`pending`, `approved`,
 `rejected`, `not_required`). This differs from the older design document's
@@ -131,21 +135,27 @@ are operator-configurable through local config and runner flags.
 
 ## Memory Integration
 
-Agent River currently has a partial Codex Memory River integration. Telegram
-Codex direct replies can include same-chat history and, when configured, a
-Memory River context block for the default repo.
+Agent River has an optional Codex Memory River integration. Telegram Codex
+direct replies can include same-chat history and, when configured, a Memory
+River context block for the default repo. Plan/edit task prompts can also
+include Memory River context when memory is enabled or `--memory-state` is
+provided.
+
+Codex Memory River is not a package dependency. Agent River owns the generic
+JSONL, hashing, argument parsing, path, and secret-scan helpers needed by its
+core runtime. The memory adapter dynamically imports Memory River only when
+memory context is requested.
+
+If memory is requested but unavailable, Agent River fails closed with a clear
+reason such as `memory_unavailable`. If Memory River loads but context building
+fails, the reason is `memory_context_failed`. In both cases the model is not
+invoked with partial or untrusted memory context.
 
 This is not yet a fully memory-native agent:
 
 - Claude review does not consistently receive curated Memory River context.
 - Every task step does not yet inject a uniform curated memory layer.
 - Completed tasks do not yet produce Memory River candidates automatically.
-- `codex-memory-river` is still a hard package dependency because Agent River
-  reuses several utility modules from it.
-
-The intended direction is to make Memory River an optional integration while
-keeping Agent River's core Telegram, approval, dispatch, and runner features
-usable without it.
 
 ## Current Non-Goals
 

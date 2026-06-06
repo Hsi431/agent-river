@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
+import { scanSecrets } from "../lib/secret-scan.js";
 import { getTelegramCodexPolicy } from "./safety.js";
 
 // The ONLY module that invokes real `codex exec`. It passes no shell,

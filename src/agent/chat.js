@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { appendJsonl, readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
-import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
-import { shortHash } from "codex-memory-river/src/hash.js";
+import { appendJsonl, readJsonl, writeJsonl } from "../lib/jsonl.js";
+import { scanSecrets } from "../lib/secret-scan.js";
+import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 import { isGatewayUserAllowed } from "./safety.js";
 

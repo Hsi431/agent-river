@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { appendJsonl, readJsonl } from "codex-memory-river/src/jsonl.js";
+import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { agentPaths } from "./paths.js";
 
 const DEFAULT_DAILY_TOKEN_BUDGET = 20000;

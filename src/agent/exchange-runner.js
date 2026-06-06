@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
-import { appendJsonl, readJsonl } from "codex-memory-river/src/jsonl.js";
+import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { agentPaths } from "./paths.js";
 import { checkSafety, getPrimaryAgentId, getTelegramCodexPolicy } from "./safety.js";
 import {

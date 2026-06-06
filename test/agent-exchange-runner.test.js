@@ -6,7 +6,7 @@ import test from "node:test";
 import { runExchangeRunnerOnce, buildClaudeInvocation, pickEligibleMessage, readRunnerSession, writeRunnerSession, clearRunnerSession, runnerSessionStatus, makeOpusEditRunner } from "../src/agent/exchange-runner.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
-import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
+import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 import { DISPATCH_CHANNEL } from "../src/agent/dispatch.js";
 
 const REPO = "/home/fnata_claw/codex-memory-river";

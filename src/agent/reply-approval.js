@@ -1,5 +1,5 @@
-import { appendJsonl, readJsonl } from "codex-memory-river/src/jsonl.js";
-import { shortHash } from "codex-memory-river/src/hash.js";
+import { appendJsonl, readJsonl } from "../lib/jsonl.js";
+import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 import { assertChatReplyAllowed, queueChatReply } from "./chat.js";
 import { pollTelegramOnce } from "./telegram.js";

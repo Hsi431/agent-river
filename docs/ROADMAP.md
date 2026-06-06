@@ -6,29 +6,32 @@ the current Agent River product shape.
 
 ## Before Wider Source Release
 
-### Decouple Codex Memory River As A Hard Dependency
+### Codex Memory River Optional Integration
 
-Agent River currently depends on `codex-memory-river` for both memory integration
-and shared utility modules such as JSONL helpers, hashing, secret scanning,
-argument parsing, and path helpers.
+Agent River no longer hard-depends on `codex-memory-river` for core runtime
+startup. JSONL helpers, hashing, secret scanning, argument parsing, and path
+helpers live in this repo. Memory River is dynamically loaded only when memory
+context is requested.
 
-Goal:
+Current result:
 
 - Agent River core starts and runs without a sibling `codex-memory-river` clone.
 - Telegram, gateway, approvals, dispatch, model controls, and Codex/Claude
   runners still work.
 - Memory River context is optional and fails closed with a clear unavailable
   status when configured but missing.
-- Basic utilities needed by Agent River live in Agent River or in a small shared
-  package with a stable install story.
+
+Remaining work:
+
+- Decide whether a future shared utility package is worthwhile once another repo
+  needs the same helpers.
 
 ### Documentation Cleanup
 
 - Keep `CODEX_AGENT_EXOSKELETON_ARCH_2026-05-29.md` as an archived design
   snapshot.
 - Keep `docs/ARCHITECTURE.md` current with real implementation boundaries.
-- Document source-release installation clearly, including the current sibling
-  checkout requirement until dependency decoupling lands.
+- Document source-release installation clearly.
 - Document the deployment rule: code/settings changes require commit, settings
   regeneration when relevant, and bridge restart.
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { expandHome } from "codex-memory-river/src/paths.js";
+import { expandHome } from "../lib/paths.js";
 
 export function defaultAgentHome() {
   return path.join(os.homedir(), ".codex", "agent");
