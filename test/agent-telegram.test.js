@@ -858,6 +858,31 @@ test("telegram poll queues failed gateway replies without re-executing the comma
   assert.equal(readJsonl(agentPaths(agentHome).telegramOutbox).at(-1).status, "sent");
 });
 
+test("telegram poll advances past a failed reply that cannot enter the outbox", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-outbox-poison-");
+  allowGatewayUser(agentHome, "123");
+  const calls = [];
+
+  const result = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: failingSendFetch(calls, [
+      telegramUpdate({ updateId: 22, fromId: 123, chatId: 456, text: "agent status" }),
+    ]),
+    handleUpdateImpl: async () => ({
+      ok: true,
+      payload: { method: "sendMessage", chat_id: 456, text: "" },
+    }),
+  });
+
+  const state = JSON.parse(fs.readFileSync(agentPaths(agentHome).telegramState, "utf8"));
+  assert.equal(result.next_offset, 23);
+  assert.equal(state.next_offset, 23);
+  assert.equal(result.handled[0].sent, false);
+  assert.match(result.handled[0].send_error, /outbox skipped/);
+  assert.equal(readJsonl(agentPaths(agentHome).telegramOutbox).length, 0);
+});
+
 test("telegram poll sanitizes transport errors without exposing the token", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-fetch-error-");
 

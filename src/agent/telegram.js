@@ -92,6 +92,7 @@ export async function pollTelegramOnce({
   fetchImpl,
   execFileImpl,
   requestImpl,
+  handleUpdateImpl = handleTelegramUpdate,
   memoryStateHome,
   runner,
   longPollSeconds = 0,
@@ -120,7 +121,7 @@ export async function pollTelegramOnce({
   const handled = [];
   let nextOffset = state.next_offset;
   for (const update of updates) {
-    const result = await handleTelegramUpdate({ agentHome, update, memoryStateHome, runner, execFileImpl });
+    const result = await handleUpdateImpl({ agentHome, update, memoryStateHome, runner, execFileImpl });
     let sent = false;
     let send_error = null;
     if (result.payload) {
@@ -130,7 +131,11 @@ export async function pollTelegramOnce({
       } catch (error) {
         send_error = error.message;
         if (result.payload.method === "sendMessage") {
-          queueTelegramOutboxPayload(agentHome, update?.update_id, result.payload);
+          try {
+            queueTelegramOutboxPayload(agentHome, update?.update_id, result.payload);
+          } catch (queueError) {
+            send_error = `${send_error}; outbox skipped: ${queueError.message}`;
+          }
         }
       }
     }
