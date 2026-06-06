@@ -11,9 +11,10 @@
 
 Agent River is a small, local control plane that lets you queue, run, and supervise
 multiple AI coding agents — Codex and Claude (Opus/Sonnet) — from your phone over
-Telegram. The agents do the work; **you stay in the loop.** Plans, edits, and
-cross-agent hand-offs only happen after you tap **Approve**, and high-risk actions
-like commit, push, deploy, install, and delete always stay manual.
+Telegram. The agents do the work; **you stay in the loop.** Edits and cross-agent routing
+are governed by an approval policy — most actions wait for your tap — and
+high-risk operations like commit, push, deploy, install, and delete always stay
+manual.
 
 It runs entirely on your own machine, keeps all state on local disk, has **zero
 runtime dependencies**, and never spawns a shell — agents are launched as bounded,
@@ -55,10 +56,11 @@ Traditional Chinese for Chinese input.*
 
 ## Why Agent River
 
-- 🛡️ **Approval-gated by design.** Edit tasks *always* require an explicit owner
-  Approve — it's enforced server-side, so callers can't bypass it. Agents can only
-  *propose* cross-agent work; routing needs your consent, and execution needs a
-  second approval. There is no "just trust the model" path.
+- 🛡️ **Approval-gated by design.** Every edit task enters an approval state
+  server-side, so nothing edits files unnoticed; most need an explicit owner
+  Approve, and only small low-risk owner edits can be auto-approved by policy.
+  Agents can only *propose* cross-agent work — routing needs your consent, and
+  execution needs its own approval.
 - 🧯 **Brakes that actually stop the car.** A global kill switch (`pause`/`resume`),
   a daily token budget, and per-lane daily caps. A corrupt or unreadable config
   **fails closed** — kill switch on, budget zero.
@@ -70,12 +72,14 @@ Traditional Chinese for Chinese input.*
   read-only tools by a generated settings file; the edit lane can change files but
   never commit, push, deploy, install, delete, reach the network, or dispatch to
   other agents. A disallowed `git HEAD` change is detected and fails the task.
-- 🧹 **Secrets don't leak.** Inbound text, stored messages, replies, diffs, and
-  test output are scanned and redacted — OpenAI/GitHub/AWS/Slack/JWT/Google and
-  Telegram tokens, credentialed URLs, key assignments, and more.
+- 🧹 **Secret scanning on the paths that leave your machine.** Agent-to-agent
+  messages, replies, diffs, test output, and outbound Telegram replies are scanned
+  and redacted — OpenAI/GitHub/AWS/Slack/JWT/Google and Telegram tokens,
+  credentialed URLs, key assignments, and more. (Raw chat you send is stored
+  locally as-is, so keep agent state private.)
 - 📦 **No supply chain to trust.** Zero runtime dependencies. Every subprocess is
-  launched via `execFile` — never a shell. Bot tokens travel over stdin, never into
-  argv or agent state.
+  launched via `execFile` — never a shell. Bot tokens never touch argv or agent
+  state (the curl transport passes the token through a stdin config file).
 - 🤝 **Multi-agent, multi-workflow.** Plan and edit lanes, a read-only review
   runner, owner Q&A, deterministic direct-send for trivial acks, and
   owner-approved Codex⇄Claude dispatch — all over one Telegram bot.
@@ -239,8 +243,10 @@ This is the heart of the project, so it's worth stating plainly:
   deny `exchange-submit`/`claim`/`release`; Node owns mailbox writes.
 - **Dangerous requests are declined** with a manual-action notice (commit, push,
   deploy, install, delete, reset, …).
-- **Secrets are scanned and redacted** across every stored and outbound path; a
-  reply that still looks secret-bearing is withheld.
+- **Secrets are scanned and redacted** on agent-to-agent messages, replies, diffs,
+  test output, and outbound Telegram replies; a reply that still looks
+  secret-bearing is withheld. Raw inbound chat is stored locally unredacted — keep
+  agent state private.
 - **Fail-closed config:** unreadable/invalid config disables everything.
 - **External trust boundary.** Claude-runner safety depends on Claude Code
   continuing to enforce headless tool allowlists and reject compound commands that

@@ -278,6 +278,11 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
     case "exchange_thread":
       return { ok: true, reply: formatExchangeThread(getExchangeThread(agentHome, parsed.args.id)) };
     case "agent_config": {
+      // Model controls are owner-only, matching the inline model buttons. A
+      // gateway-allowlisted operator alone cannot switch runner models.
+      if (!isOwner({ user_id: userId }, getTelegramCodexPolicy(agentHome))) {
+        return { ok: false, reply: "Model controls require owner authority." };
+      }
       const { key, value } = parsed.args;
       if (key === "opus-model") {
         setTelegramCodexPolicy(agentHome, { exchange_runner_model: value });

@@ -6,7 +6,7 @@ import test from "node:test";
 import { runAgentCli } from "../src/agent/cli.js";
 import { handleGatewayMessage, parseGatewayCommand, safeGatewayReply } from "../src/agent/gateway.js";
 import { agentPaths } from "../src/agent/paths.js";
-import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "../src/agent/safety.js";
+import { allowGatewayUser, enableExchangeAgent, getTelegramCodexPolicy, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { listTasks, writeTask } from "../src/agent/tasks.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
@@ -209,6 +209,7 @@ test("gateway help returns command usage", async () => {
 test("gateway config sets Codex model and models reports local-only status", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-models-");
   allowGatewayUser(agentHome, "user-allowed");
+  makeOwner(agentHome, "user-allowed");
   setDailyTokenBudget(agentHome, "disabled");
 
   const setCodex = await handleGatewayMessage({
@@ -334,6 +335,22 @@ test("gateway @opus exchange ask triggers the runner in-process", async () => {
   assert.match(result.reply, /Sonnet 4\.6[\s\S]*msg_/);
   assert.equal(result.runner_triggered, true);
   assert.equal(triggeredWith?.agentHome, agentHome);
+});
+
+test("gateway non-owner cannot change runner models via text command", async () => {
+  const agentHome = makeAgentHome("codex-agent-gateway-config-nonowner-");
+  allowGatewayUser(agentHome, "user-allowed"); // operator only, not owner
+
+  const result = await handleGatewayMessage({
+    agentHome,
+    userId: "user-allowed",
+    text: "agent config opus-model opus",
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reply, /owner/i);
+  // Model is unchanged from the default.
+  assert.equal(getTelegramCodexPolicy(agentHome).exchange_runner_model, "sonnet");
 });
 
 test("gateway @claude ack uses Claude label while routing to Opus mailbox", async () => {

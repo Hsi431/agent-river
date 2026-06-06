@@ -11,8 +11,8 @@
 
 Agent River 是一個輕量的本機控制平面。你可以用手機透過 Telegram 排程、執行、盯著
 多個 AI 程式 agent(Codex 與 Claude 的 Opus／Sonnet)幫你做事,而且全程由你拍板:
-計畫、改檔、跨 agent 交接,都要等你按下「核准」才會真的動;commit、push、部署、
-安裝、刪除這類高風險操作則一律保持手動。
+改檔和跨 agent 路由都受核准政策管控,多數動作要等你按下「核准」才會真的動;commit、
+push、部署、安裝、刪除這類高風險操作則一律保持手動。
 
 整套東西跑在你自己的機器上,狀態全存在本機,沒有任何 runtime 相依套件,也從不開
 shell。每個 agent 都是以受限、綁好工具範圍的 worker 身分被叫起來做一件事,而不是
@@ -52,9 +52,9 @@ Bot      ›  已核准並完成 edit 任務(task_17a3…)。
 
 ## 它好在哪
 
-- 🛡️ **核准閘門是設計的核心。** Edit 任務一定要 owner 明確核准,而且這是在後端強制的,
-  呼叫端繞不過去。Agent 對於跨 agent 的工作只能「提議」:路由要你同意,執行還得再
-  核准一次。這裡沒有「就相信模型吧」這種捷徑。
+- 🛡️ **核准閘門是設計的核心。** 每個 edit 任務都會在後端進入待核准狀態,不會偷偷改檔;
+  多數需要 owner 明確按核准,只有小型、低風險的 owner edit 才會依政策自動核准。Agent
+  對於跨 agent 的工作只能「提議」:路由要你同意,執行還得再核准一次。
 - 🧯 **煞得住的煞車。** 全域 kill switch(`pause`／`resume`)、每日 token 預算、各通道
   每日上限。設定檔壞掉或讀不到時會 fail-closed:kill switch 打開、預算歸零,寧可不動
   也不亂動。
@@ -64,11 +64,13 @@ Bot      ›  已核准並完成 edit 任務(task_17a3…)。
 - 🔒 **Agent 只拿最小權限。** Review 通道叫起來的 headless Claude,會被一份產生好的
   設定檔鎖在唯讀工具裡;edit 通道雖然能改檔,但絕不能 commit、push、部署、安裝、刪除、
   連網,也不能再派工給別的 agent。萬一它偷偷動了 `git HEAD`,會被抓出來並讓任務失敗。
-- 🧹 **機密不會外流。** 進來的訊息、存下來的內容、回覆、diff、測試輸出,全都會掃描並
-  遮蔽:OpenAI／GitHub／AWS／Slack／JWT／Google 和 Telegram 的 token、含帳密的網址、
-  金鑰賦值等等都在守備範圍。
+- 🧹 **離開機器的路徑都會掃機密。** Agent 之間的訊息、回覆、diff、測試輸出,以及回送到
+  Telegram 的內容,都會掃描並遮蔽:OpenAI／GitHub／AWS／Slack／JWT／Google 和 Telegram
+  的 token、含帳密的網址、金鑰賦值等等。(你自己發的聊天訊息會原文存在本機,所以 agent
+  狀態要保持私密。)
 - 📦 **沒有要你信任的供應鏈。** 零 runtime 相依套件。每個子程序都用 `execFile` 啟動,
-  從不經過 shell;bot token 只走 stdin,不會出現在 argv 或 agent 狀態裡。
+  從不經過 shell;bot token 不會進 argv 或 agent 狀態(curl transport 透過 stdin 的
+  config 檔傳入)。
 - 🤝 **多 agent、多工作流,一個 bot 全包。** Plan 與 edit 通道、唯讀 review runner、
   owner 問答、瑣事自動回覆(direct-send),還有 owner 核准的 Codex⇄Claude 派工。
 
@@ -225,7 +227,9 @@ node bin/codex-agent.js dispatch-show --state ~/.codex/agent --id dispatch_...
 - **Agent 不能自己寫信箱。** Review runner 的設定拒絕 `exchange-submit`／`claim`／
   `release`,信箱寫入由 Node 掌控。
 - **危險請求會被婉拒**,並提醒你手動處理(commit、push、部署、安裝、刪除、reset…)。
-- **機密一律掃描並遮蔽**,涵蓋所有儲存與外送路徑;看起來還是含機密的回覆會被攔下不送。
+- **機密會掃描並遮蔽**,涵蓋 agent 之間的訊息、回覆、diff、測試輸出與回送 Telegram 的
+  內容;看起來還是含機密的回覆會被攔下不送。原始入站聊天會原文存在本機,所以 agent
+  狀態要保持私密。
 - **設定 fail-closed。** 讀不到或無效的設定,會把一切停掉。
 - **外部信任邊界。** Claude runner 的安全性,靠的是 Claude Code 持續落實 headless 工具
   白名單、並擋掉超出允許 Bash 樣式的複合指令。所以 Claude Code 的升級要當成跟安全有關
