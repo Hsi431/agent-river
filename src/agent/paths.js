@@ -23,6 +23,7 @@ export function agentPaths(agentHome) {
     config: path.join(agentHome, "config.json"),
     gatewayAudit: path.join(agentHome, "gateway-audit.jsonl"),
     telegramState: path.join(agentHome, "telegram-state.json"),
+    telegramOutbox: path.join(agentHome, "telegram-outbox.jsonl"),
     chatInbox: path.join(agentHome, "chat-inbox.jsonl"),
     chatReplies: path.join(agentHome, "chat-replies.jsonl"),
     draftsDir: path.join(agentHome, "drafts"),

@@ -121,10 +121,6 @@ export async function pollTelegramOnce({
   let nextOffset = state.next_offset;
   for (const update of updates) {
     const result = await handleTelegramUpdate({ agentHome, update, memoryStateHome, runner, execFileImpl });
-    if (Number.isInteger(update?.update_id)) {
-      nextOffset = Math.max(nextOffset ?? 0, update.update_id + 1);
-      writeTelegramState(agentHome, { next_offset: nextOffset });
-    }
     let sent = false;
     let send_error = null;
     if (result.payload) {
@@ -133,7 +129,14 @@ export async function pollTelegramOnce({
         sent = true;
       } catch (error) {
         send_error = error.message;
+        if (result.payload.method === "sendMessage") {
+          queueTelegramOutboxPayload(agentHome, update?.update_id, result.payload);
+        }
       }
+    }
+    if (Number.isInteger(update?.update_id)) {
+      nextOffset = Math.max(nextOffset ?? 0, update.update_id + 1);
+      writeTelegramState(agentHome, { next_offset: nextOffset });
     }
     handled.push({
       update_id: update?.update_id ?? null,
@@ -145,11 +148,20 @@ export async function pollTelegramOnce({
       allowed: result.gateway?.allowed ?? result.chat?.allowed ?? null,
     });
   }
+  const gatewayReplies = await sendPendingTelegramOutbox({ agentHome, token, request, fetchImpl });
   const replies = await sendPendingTelegramReplies({ agentHome, token, request, fetchImpl });
   const exchangeNotifications = await sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl });
   const dispatchNotifications = await sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl });
 
-  return { updates: updates.length, handled, replies, exchange_notifications: exchangeNotifications, dispatch_notifications: dispatchNotifications, next_offset: nextOffset };
+  return {
+    updates: updates.length,
+    handled,
+    gateway_replies: gatewayReplies,
+    replies,
+    exchange_notifications: exchangeNotifications,
+    dispatch_notifications: dispatchNotifications,
+    next_offset: nextOffset,
+  };
 }
 
 export function createTelegramRequest({ transport = "fetch", fetchImpl, execFileImpl } = {}) {
@@ -289,6 +301,60 @@ async function sendPendingTelegramReplies({ agentHome, token, request, fetchImpl
     replies.push({ id: reply.id, sent, send_error });
   }
   return replies;
+}
+
+function queueTelegramOutboxPayload(agentHome, updateId, payload) {
+  const text = String(payload.text || "");
+  if (!text.trim() || scanSecrets(text).length > 0) {
+    throw new Error("Telegram gateway reply is empty or may contain a secret");
+  }
+  const id = `gateway_reply_${Number.isInteger(updateId) ? updateId : shortHash(`${payload.chat_id}:${text}`)}`;
+  appendJsonl(agentPaths(agentHome).telegramOutbox, {
+    id,
+    update_id: Number.isInteger(updateId) ? updateId : null,
+    method: "sendMessage",
+    chat_id: String(payload.chat_id),
+    text,
+    ...(payload.reply_markup ? { reply_markup: payload.reply_markup } : {}),
+    status: "queued",
+    created_at: new Date().toISOString(),
+  });
+}
+
+async function sendPendingTelegramOutbox({ agentHome, token, request, fetchImpl }) {
+  const sent = [];
+  for (const entry of latestTelegramOutbox(agentHome).filter((item) => item.status === "queued")) {
+    let send_error = null;
+    try {
+      await sendTelegramMessage({
+        token,
+        request,
+        fetchImpl,
+        chatId: entry.chat_id,
+        text: entry.text,
+        replyMarkup: entry.reply_markup,
+      });
+      appendJsonl(agentPaths(agentHome).telegramOutbox, {
+        id: entry.id,
+        status: "sent",
+        sent_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      send_error = error.message;
+    }
+    sent.push({ id: entry.id, sent: !send_error, send_error });
+  }
+  return sent;
+}
+
+function latestTelegramOutbox(agentHome) {
+  const latest = new Map();
+  for (const entry of readJsonl(agentPaths(agentHome).telegramOutbox)) {
+    if (entry.id) {
+      latest.set(entry.id, { ...(latest.get(entry.id) || {}), ...entry });
+    }
+  }
+  return Array.from(latest.values());
 }
 
 async function sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl }) {

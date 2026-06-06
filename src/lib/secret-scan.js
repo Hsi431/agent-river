@@ -6,6 +6,7 @@ const SECRET_PATTERNS = [
   { name: "pem_private_key", regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
   { name: "jwt", regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   { name: "google_api_key", regex: /\bAIza[A-Za-z0-9_-]{20,}\b/g },
+  { name: "telegram_bot_token", regex: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
   { name: "authorization_header", regex: /\bAuthorization\s*:\s*(Bearer|Basic)\s+[A-Za-z0-9_./+=:-]{12,}/gi },
   { name: "credentialed_url", regex: /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]+@[^/\s]+/gi },
   { name: "api_key_assignment", regex: /\b(api[_-]?key|token|secret)\b\s*[:=]\s*['"]?[A-Za-z0-9_./+=:@-]{8,}/gi },

@@ -8,7 +8,6 @@ import { handleGatewayMessage, parseGatewayCommand, safeGatewayReply } from "../
 import { agentPaths } from "../src/agent/paths.js";
 import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { listTasks, writeTask } from "../src/agent/tasks.js";
-import { statePaths } from "../src/lib/paths.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("gateway parses status and submit commands", () => {
@@ -757,7 +756,7 @@ test("gateway denies empty user ids and audits the attempt", async () => {
 
 test("gateway denied users cannot run queued tasks", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-deny-run-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-deny-run-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const submitted = await handleGatewayMessage({
     agentHome,
@@ -814,7 +813,7 @@ test("gateway allows submitted plan tasks for allowlisted users", async () => {
 
 test("gateway run advances queued plan tasks for allowlisted users", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-run-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-run-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const submitted = await handleGatewayMessage({
     agentHome,
@@ -849,7 +848,7 @@ test("gateway run advances queued plan tasks for allowlisted users", async () =>
 
 test("gateway run advances only the requested task", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-run-scoped-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-run-scoped-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const first = await handleGatewayMessage({
     agentHome,
@@ -893,7 +892,7 @@ test("gateway run advances only the requested task", async () => {
 
 test("gateway run requires a task id and does not sweep queued tasks", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-run-require-id-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-run-require-id-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const submitted = await handleGatewayMessage({
     agentHome,
@@ -926,7 +925,7 @@ test("gateway run requires a task id and does not sweep queued tasks", async () 
 
 test("gateway run respects the kill switch", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-run-kill-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-run-kill-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const submitted = await handleGatewayMessage({
     agentHome,
@@ -964,7 +963,7 @@ test("gateway run respects the kill switch", async () => {
 
 test("gateway run respects the daily token budget", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-run-budget-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-run-budget-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const submitted = await handleGatewayMessage({
     agentHome,
@@ -1190,7 +1189,7 @@ test("gateway submit creates a pending task that requires approval", async () =>
 
 test("gateway run does not advance a pending submitted task (no approval bypass)", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-run-pending-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-run-pending-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const submitted = await handleGatewayMessage({
     agentHome,
@@ -1218,7 +1217,7 @@ test("gateway run does not advance a pending submitted task (no approval bypass)
 // not worker.js's fakeRunner.
 test("gateway run with no injected runner uses the real plan runner, not fakeRunner", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-run-realrunner-");
-  const memoryStateHome = makeMemoryState("codex-agent-gateway-run-realrunner-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "user-allowed");
   const submitted = await handleGatewayMessage({
     agentHome,
@@ -1286,26 +1285,6 @@ function stubEditExec({ diffStat = "", verifyExit = 0, calls = [] } = {}) {
     } else { callback(null, "", ""); }
     return { stdin: { on() {}, write() {}, end() {} } };
   };
-}
-
-function makeMemoryState(prefix) {
-  const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  writeJsonl(statePaths(stateHome).memories, [{
-    id: "mem_gateway_context",
-    scope: "repo:/repo/memory-river",
-    type: "workflow_rule",
-    content: "Gateway run tests should use memory context.",
-    status: "active",
-    confidence: "high",
-    evidence: ["/tmp/session.jsonl:1"],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    supersedes: [],
-    superseded_by: null,
-    tags: [],
-  }]);
-  writeJsonl(statePaths(stateHome).chunks, []);
-  return stateHome;
 }
 
 function fakeTask({ id, request }) {

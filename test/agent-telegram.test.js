@@ -21,7 +21,6 @@ import { agentPaths } from "../src/agent/paths.js";
 import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwitch, writeAgentConfig } from "../src/agent/safety.js";
 import { writeTask } from "../src/agent/tasks.js";
 import { createDispatchApproval, listDispatchApprovals } from "../src/agent/dispatch.js";
-import { statePaths } from "../src/lib/paths.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("telegram adapter maps allowed updates to gateway replies", async () => {
@@ -117,7 +116,7 @@ test("telegram adapter submits plan tasks through gateway core", async () => {
 
 test("telegram adapter runs queued plan tasks through gateway core", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-run-");
-  const memoryStateHome = makeMemoryState("codex-agent-telegram-run-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "123");
   const submitted = await handleTelegramUpdate({
     agentHome,
@@ -813,10 +812,10 @@ test("dispatch callback from non-owner is denied and does not mutate approval", 
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 0);
 });
 
-test("telegram poll acks consumed updates even when sendMessage fails", async () => {
+test("telegram poll queues failed gateway replies without re-executing the command", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-send-failure-");
   allowGatewayUser(agentHome, "123");
-  const fetchCalls = [];
+  const firstCalls = [];
   const updates = [
     telegramUpdate({
       updateId: 20,
@@ -824,20 +823,39 @@ test("telegram poll acks consumed updates even when sendMessage fails", async ()
       chatId: 456,
       text: 'agent submit --repo /repo/memory-river --request "Plan once"',
     }),
-    telegramUpdate({ updateId: 21, fromId: 123, chatId: 456, text: "agent status" }),
   ];
-  const fetchImpl = fakeTelegramFetch(fetchCalls, updates, { failSendAt: 2 });
 
-  const result = await pollTelegramOnce({ agentHome, token: "test-token", fetchImpl });
+  const first = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: failingSendFetch(firstCalls, updates),
+  });
   const state = JSON.parse(fs.readFileSync(agentPaths(agentHome).telegramState, "utf8"));
+  const queued = readJsonl(agentPaths(agentHome).telegramOutbox);
 
-  assert.equal(result.updates, 2);
-  assert.equal(result.next_offset, 22);
-  assert.equal(result.handled[0].sent, true);
-  assert.equal(result.handled[1].sent, false);
-  assert.equal(result.handled[1].send_error, "Telegram sendMessage request failed");
-  assert.equal(state.next_offset, 22);
+  assert.equal(first.updates, 1);
+  assert.equal(first.next_offset, 21);
+  assert.equal(first.handled[0].sent, false);
+  assert.equal(first.handled[0].send_error, "Telegram sendMessage request failed");
+  assert.equal(first.gateway_replies[0].sent, false);
+  assert.equal(state.next_offset, 21);
+  assert.equal(queued[0].status, "queued");
   assert.equal(fs.readdirSync(agentPaths(agentHome).tasksDir).length, 1);
+
+  const secondCalls = [];
+  const second = await pollTelegramOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedFetch(secondCalls, [[]]),
+  });
+
+  assert.equal(second.updates, 0);
+  assert.equal(second.gateway_replies[0].sent, true);
+  assert.equal(secondCalls[0].body.offset, 21);
+  assert.equal(secondCalls[1].method, "sendMessage");
+  assert.equal(secondCalls[1].body.text.includes("Submitted plan task"), true);
+  assert.equal(fs.readdirSync(agentPaths(agentHome).tasksDir).length, 1);
+  assert.equal(readJsonl(agentPaths(agentHome).telegramOutbox).at(-1).status, "sent");
 });
 
 test("telegram poll sanitizes transport errors without exposing the token", async () => {
@@ -984,7 +1002,7 @@ test("telegram poll supports injected curl transport", async () => {
 
 test("telegram poll sends agent run summaries", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-poll-run-");
-  const memoryStateHome = makeMemoryState("codex-agent-telegram-poll-run-memory-");
+  const memoryStateHome = undefined;
   allowGatewayUser(agentHome, "123");
   const submitted = await handleTelegramUpdate({
     agentHome,
@@ -2546,6 +2564,7 @@ test("reply context fails closed when memory preflight throws", async () => {
       agentHome, inbox: current,
       memory: { repo: "/repo/x", stateHome: "/state/x" },
       preflightImpl: async () => { throw new Error("preflight boom"); },
+      contextBlockImpl: () => "unused",
     }),
     (error) => {
       assert.equal(error.reason, "memory_context_failed");
@@ -3517,26 +3536,6 @@ function fakeStdin(onEnd) {
 
 function makeAgentHome(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
-
-function makeMemoryState(prefix) {
-  const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  writeJsonl(statePaths(stateHome).memories, [{
-    id: "mem_telegram_context",
-    scope: "repo:/repo/memory-river",
-    type: "workflow_rule",
-    content: "Telegram run tests should use memory context.",
-    status: "active",
-    confidence: "high",
-    evidence: ["/tmp/session.jsonl:1"],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    supersedes: [],
-    superseded_by: null,
-    tags: [],
-  }]);
-  writeJsonl(statePaths(stateHome).chunks, []);
-  return stateHome;
 }
 
 function fakeTask({ id, request }) {

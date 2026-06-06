@@ -42,7 +42,7 @@ export function getAgentStatus({ agentHome, id } = {}) {
   return { tasks: listTasks(agentHome), runs: readRuns(agentHome), safety: getSafetyStatus(agentHome) };
 }
 
-export async function runAgentOnce({ agentHome, memoryStateHome, runner, taskId, execFileImpl } = {}) {
+export async function runAgentOnce({ agentHome, memoryStateHome, memoryContextImpl, runner, taskId, execFileImpl } = {}) {
   const runnable = listTasks(agentHome)
     .filter((task) => !taskId || task.id === taskId)
     .filter((task) => isAdvanceable(task.status));
@@ -73,9 +73,9 @@ export async function runAgentOnce({ agentHome, memoryStateHome, runner, taskId,
     }
     lockedRepos.add(task.repo);
     if (task.mode === "edit") {
-      results.push(await runEditTask({ agentHome, memoryStateHome, task, runner, execFileImpl }));
+      results.push(await runEditTask({ agentHome, memoryStateHome, memoryContextImpl, task, runner, execFileImpl }));
     } else {
-      results.push(await runPlanOnlyTask({ agentHome, memoryStateHome, task, runner }));
+      results.push(await runPlanOnlyTask({ agentHome, memoryStateHome, memoryContextImpl, task, runner }));
     }
     advanced += 1;
   }
@@ -106,14 +106,14 @@ function parkTask(agentHome, task, reason) {
   return recordTaskEvent(agentHome, task, note);
 }
 
-async function runPlanOnlyTask({ agentHome, memoryStateHome, task, runner }) {
+async function runPlanOnlyTask({ agentHome, memoryStateHome, memoryContextImpl, task, runner }) {
   let current = transitionTask(agentHome, task, "planning", "Planning started.");
   const startedAt = new Date().toISOString();
 
   let contextBlock;
   let workerResult;
   try {
-    contextBlock = await buildContextBlock({ agentHome, memoryStateHome, repo: current.repo });
+    contextBlock = await buildContextBlock({ agentHome, memoryStateHome, memoryContextImpl, repo: current.repo });
     workerResult = await runPlanStep({ task: current, contextBlock, runner });
   } catch (error) {
     // A throw (e.g. preflight or the runner failing) must not strand the task in
@@ -173,7 +173,7 @@ async function runPlanOnlyTask({ agentHome, memoryStateHome, task, runner }) {
   return transitionTask(agentHome, current, "done", "Plan-only task done.");
 }
 
-async function runEditTask({ agentHome, memoryStateHome, task, runner, execFileImpl: execFileImplArg }) {
+async function runEditTask({ agentHome, memoryStateHome, memoryContextImpl, task, runner, execFileImpl: execFileImplArg }) {
   // Repo allowlist: only run against the policy-configured default_repo.
   const policy = getTelegramCodexPolicy(agentHome);
   const allowedRepo = policy.default_repo ? path.resolve(policy.default_repo) : null;
@@ -195,7 +195,7 @@ async function runEditTask({ agentHome, memoryStateHome, task, runner, execFileI
   let contextBlock;
   let workerResult;
   try {
-    contextBlock = await buildContextBlock({ agentHome, memoryStateHome, repo: current.repo });
+    contextBlock = await buildContextBlock({ agentHome, memoryStateHome, memoryContextImpl, repo: current.repo });
     workerResult = await runEditStep({ task: current, contextBlock, runner: effectiveRunner });
   } catch (error) {
     const diffStat = await captureGitDiff(current.repo, execImpl);
@@ -331,9 +331,10 @@ function safeOutput(text, maxChars = 1200) {
   return raw.length > maxChars ? `${raw.slice(0, maxChars - 3)}...` : raw;
 }
 
-async function buildContextBlock({ agentHome, memoryStateHome, repo }) {
+async function buildContextBlock({ agentHome, memoryStateHome, memoryContextImpl, repo }) {
   const policy = getTelegramCodexPolicy(agentHome);
-  return buildMemoryContextBlock({
+  const buildContext = memoryContextImpl || buildMemoryContextBlock;
+  return buildContext({
     enabled: Boolean(memoryStateHome || policy.memory_enabled),
     memoryStateHome,
     repo,

@@ -9,11 +9,13 @@
   "files": [
     "bin/",
     "src/",
-    "docs/",
-    "CODEX_AGENT_EXOSKELETON_ARCH_2026-05-29.md",
-    "OPUS_REVIEW_2026-05-29.md",
+    "docs/AGENT_TELEGRAM_POLLING.md",
+    "docs/ARCHITECTURE.md",
+    "docs/ROADMAP.md",
+    "CHANGELOG.md",
     "LICENSE",
     "README.md",
+    "SECURITY.md",
     "package.json"
   ],
   "scripts": {

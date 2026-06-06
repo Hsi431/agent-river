@@ -36,17 +36,7 @@ try {
       '}',
     ].join(""),
   ]);
-  run(process.execPath, [
-    "--test",
-    "test/agent-dispatch.test.js",
-    "test/agent-exchange-runner.test.js",
-  ]);
-  run(process.execPath, [
-    "--test",
-    "--test-name-pattern",
-    "agent run works without Memory River|package exposes codex-agent without hard Memory River dependency|memory adapter skips Memory River",
-    "test/agent.test.js",
-  ]);
+  run(process.execPath, ["--test"]);
 } finally {
   if (hadInstalledPackage) {
     fs.renameSync(hiddenPath, installedPath);
