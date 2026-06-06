@@ -10,7 +10,6 @@ import { allowGatewayUser, setDailyTokenBudget, setTelegramCodexPolicy } from ".
 import { listPendingReplyApprovals } from "../src/agent/reply-approval.js";
 import { listTasks, writeTask } from "../src/agent/tasks.js";
 import { classifyOwnerActionMode, classifyOpusAsk } from "../src/agent/owner-mode.js";
-import { statePaths } from "../src/lib/paths.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("owner mode Q&A auto-sends for allowlisted owner", async () => {
@@ -90,7 +89,7 @@ test("owner mode low-risk action runs plan once without approval", async () => {
 
   const result = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-low-risk-action-memory-"),
+    memoryStateHome: undefined,
     runner: async () => { runnerCalls += 1; return { text: "低風險 plan summary", sessionPath: null, exit: 0, tokens: 7 }; },
     fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 15, fromId: 123, chatId: 456, text: "幫我檢查目前狀態" })], []]),
   });
@@ -312,7 +311,7 @@ test("owner approve command approves pending task, runs plan once, and sends res
   const taskId = created.approval_id;
   const approved = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-memory-"),
+    memoryStateHome: undefined,
     runner: async () => ({ text: "DS4 plan summary", sessionPath: null, exit: 0, tokens: 7 }),
     fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 8, fromId: 123, chatId: 456, text: `approve ${taskId}` })], []]),
   });
@@ -403,7 +402,7 @@ test("owner approve edit task runs edit step and reports diff", async () => {
 
   const approved = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-edit-memory-"),
+    memoryStateHome: undefined,
     execFileImpl: fakeEditExec({ verifyExit: 0, verifyStdout: "tests passed\n", calls: execCalls }),
     runner: async ({ task }) => {
       fs.writeFileSync(path.join(task.repo, "utils.js"), "export const fixed = true;\n");
@@ -448,7 +447,7 @@ test("owner approve edit task records failed wrapper verification without failin
   });
   const approved = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-edit-verify-fail-memory-"),
+    memoryStateHome: undefined,
     execFileImpl: fakeEditExec({ verifyExit: 7, verifyStderr: "test failed\n" }),
     runner: async ({ task }) => {
       fs.writeFileSync(path.join(task.repo, "utils.js"), "export const fixed = true;\n");
@@ -485,7 +484,7 @@ test("owner approve edit task can complete when Codex edits files but produces n
   });
   const approved = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-edit-no-reply-memory-"),
+    memoryStateHome: undefined,
     execFileImpl: fakeEditExec({ verifyExit: 0, verifyStdout: "tests passed\n" }),
     runner: async ({ task }) => {
       fs.writeFileSync(path.join(task.repo, "utils.js"), "export const fixed = true;\n");
@@ -659,7 +658,7 @@ test("owner approve callback approves pending task and runs plan once", async ()
 
   const result = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-callback-memory-"),
+    memoryStateHome: undefined,
     runner: async () => ({ text: "callback plan summary", sessionPath: null, exit: 0, tokens: 7 }),
     fetchImpl: sequencedFetch(calls, [[telegramCallbackUpdate({ updateId: 70, fromId: 123, chatId: 456, data: `owner:approve:${task.id}` })], []]),
   });
@@ -863,7 +862,7 @@ test("owner approve with no injected runner uses real plan runner, not fakeRunne
 
   const approved = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-realrunner-memory-"),
+    memoryStateHome: undefined,
     // No runner injected: the approve branch must fall back to realPlanRunner,
     // which we drive through a fake codex exec instead of fakeRunner.
     execFileImpl: fakeCodexExec("REAL_CODEX_PLAN_OUTPUT for task_realrunner"),
@@ -891,7 +890,7 @@ test("owner approve redacts secrets in persisted plan summary", async () => {
 
   await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-redact-summary-memory-"),
+    memoryStateHome: undefined,
     runner: async () => ({ text: "Plan done. key=sk-test1234567890ABCDEFGHIJ", sessionPath: null, exit: 0, tokens: 5 }),
     fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 21, fromId: 123, chatId: 456, text: `approve ${task.id}` })], []]),
   });
@@ -913,7 +912,7 @@ test("owner approve redacts secrets in persisted run error on exit != 0", async 
 
   await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-redact-error-memory-"),
+    memoryStateHome: undefined,
     runner: async () => ({ text: "planning blew up sk-test1234567890ABCDEFGHIJ", sessionPath: null, exit: 1, tokens: 3 }),
     fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 22, fromId: 123, chatId: 456, text: `approve ${task.id}` })], []]),
   });
@@ -940,7 +939,7 @@ test("owner approve with a throwing runner fails the task and sends an accurate 
 
   const approved = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-throw-memory-"),
+    memoryStateHome: undefined,
     runner: async () => { throw new Error("crash sk-test1234567890ABCDEFGHIJ"); },
     fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 23, fromId: 123, chatId: 456, text: `approve ${task.id}` })], []]),
   });
@@ -975,7 +974,7 @@ test("owner approve runs only the target task, not a competing runnable task", a
 
   await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-scoping-memory-"),
+    memoryStateHome: undefined,
     runner: async () => ({ text: "F5 target plan", sessionPath: null, exit: 0, tokens: 2 }),
     fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 24, fromId: 123, chatId: 456, text: `approve ${target.id}` })], []]),
   });
@@ -1099,7 +1098,7 @@ test("owner approve is not silently dropped by an active rate guard", async () =
   const result = await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true,
     globalIntervalSeconds: 300, perChatIntervalSeconds: 300,
-    memoryStateHome: makeMemoryState("codex-agent-owner-approve-rate-memory-"),
+    memoryStateHome: undefined,
     runner: async () => ({ text: "rate guard plan", sessionPath: null, exit: 0, tokens: 4 }),
     fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 33, fromId: 123, chatId: 456, text: "approve task_approve_rate" })], []]),
   });
@@ -1148,7 +1147,7 @@ test("a poll batch with approve then status does not drop the approve", async ()
 
   await telegramCodexOnce({
     agentHome, token: "t", allowRealCodex: true, requireReplyApproval: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
-    memoryStateHome: makeMemoryState("codex-agent-owner-batch-approve-memory-"),
+    memoryStateHome: undefined,
     runner: async () => ({ text: "batch plan summary", sessionPath: null, exit: 0, tokens: 4 }),
     fetchImpl: sequencedFetch(calls, [[
       telegramUpdate({ updateId: 50, fromId: 123, chatId: 456, text: "approve task_batch_approve" }),
@@ -1382,26 +1381,6 @@ function makeGitRepo(prefix) {
   execFileSync("git", ["add", "utils.js"], { cwd: repo, stdio: "ignore" });
   execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
   return repo;
-}
-
-function makeMemoryState(prefix) {
-  const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  writeJsonl(statePaths(stateHome).memories, [{
-    id: "mem_owner_approve_context",
-    scope: "repo:/repo/memory-river",
-    type: "workflow_rule",
-    content: "Owner approve tests should use memory context.",
-    status: "active",
-    confidence: "high",
-    evidence: ["/tmp/session.jsonl:1"],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    supersedes: [],
-    superseded_by: null,
-    tags: [],
-  }]);
-  writeJsonl(statePaths(stateHome).chunks, []);
-  return stateHome;
 }
 
 function fakeTask({ id, request = "Synthetic owner task" }) {

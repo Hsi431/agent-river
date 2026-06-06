@@ -13,8 +13,8 @@ import { agentPaths } from "../src/agent/paths.js";
 import { buildMemoryContextBlock } from "../src/agent/memory-adapter.js";
 import { checkSafety, setDailyTokenBudget, setKillSwitch } from "../src/agent/safety.js";
 import { approveDispatch, createDispatchApproval } from "../src/agent/dispatch.js";
-import { statePaths } from "../src/lib/paths.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
+import { redactSecrets, scanSecrets } from "../src/lib/secret-scan.js";
 
 test("agent submit creates a queued plan task", () => {
   const agentHome = makeAgentHome("codex-agent-submit-");
@@ -53,7 +53,7 @@ test("agent run refuses non-plan tasks before invoking the runner", async () => 
 
   const result = await runAgentOnce({
     agentHome,
-    memoryStateHome: makeMemoryState("codex-agent-non-plan-memory-"),
+    memoryStateHome: undefined,
     runner: async () => {
       invoked = true;
       return { text: "should not run", sessionPath: null, exit: 0, tokens: 5 };
@@ -70,7 +70,7 @@ test("agent run refuses non-plan tasks before invoking the runner", async () => 
 
 test("agent run advances queued plan task to done and appends run log", async () => {
   const agentHome = makeAgentHome("codex-agent-run-");
-  const memoryStateHome = makeMemoryState("codex-agent-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -139,7 +139,7 @@ test("plan prompt uses Traditional Chinese for owner-facing dispatch reports", a
 
 test("agent run skips tasks pending approval until approved", async () => {
   const agentHome = makeAgentHome("codex-agent-approval-pending-");
-  const memoryStateHome = makeMemoryState("codex-agent-approval-pending-memory-");
+  const memoryStateHome = undefined;
   const task = fakeTask({ approval: "pending" });
   writeTask(agentHome, task);
   let invoked = false;
@@ -170,7 +170,7 @@ test("agent run skips tasks pending approval until approved", async () => {
 
 test("agent reject marks a task failed before it can run", async () => {
   const agentHome = makeAgentHome("codex-agent-approval-reject-");
-  const memoryStateHome = makeMemoryState("codex-agent-approval-reject-memory-");
+  const memoryStateHome = undefined;
   const task = fakeTask({ approval: "pending" });
   writeTask(agentHome, task);
 
@@ -215,8 +215,8 @@ test("agent run does not add history noise for pending approvals", async () => {
   const task = fakeTask({ approval: "pending" });
   writeTask(agentHome, task);
 
-  await runAgentOnce({ agentHome, memoryStateHome: makeMemoryState("codex-agent-pending-noise-memory-") });
-  await runAgentOnce({ agentHome, memoryStateHome: makeMemoryState("codex-agent-pending-noise-memory-") });
+  await runAgentOnce({ agentHome, memoryStateHome: undefined });
+  await runAgentOnce({ agentHome, memoryStateHome: undefined });
 
   const status = getAgentStatus({ agentHome, id: task.id });
 
@@ -227,7 +227,6 @@ test("agent run does not add history noise for pending approvals", async () => {
 
 test("agent worker prompt includes memory context block", async () => {
   const agentHome = makeAgentHome("codex-agent-context-");
-  const memoryStateHome = makeMemoryState("codex-agent-context-memory-");
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -237,7 +236,11 @@ test("agent worker prompt includes memory context block", async () => {
 
   await runAgentOnce({
     agentHome,
-    memoryStateHome,
+    memoryStateHome: "/test-memory",
+    memoryContextImpl: async () => [
+      "Codex Memory River context",
+      "Memory-backed planning context should be included.",
+    ].join("\n"),
     runner: async ({ prompt }) => {
       capturedPrompt = prompt;
       return { text: "planned", sessionPath: null, exit: 0, tokens: 5 };
@@ -253,7 +256,7 @@ test("agent worker prompt includes memory context block", async () => {
 
 test("agent run records worker failures", async () => {
   const agentHome = makeAgentHome("codex-agent-worker-failure-");
-  const memoryStateHome = makeMemoryState("codex-agent-worker-failure-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -285,7 +288,7 @@ test("agent run marks interrupted non-terminal tasks failed even when safety gua
   transitionTask(agentHome, task, "planning", "Planning started.");
   setDailyTokenBudget(agentHome, 0);
 
-  const result = await runAgentOnce({ agentHome, memoryStateHome: makeMemoryState("codex-agent-interrupted-memory-") });
+  const result = await runAgentOnce({ agentHome, memoryStateHome: undefined });
   const status = getAgentStatus({ agentHome, id: task.id });
 
   assert.equal(result.advanced, 1);
@@ -296,7 +299,7 @@ test("agent run marks interrupted non-terminal tasks failed even when safety gua
 
 test("agent cost guard parks queued work without invoking the runner", async () => {
   const agentHome = makeAgentHome("codex-agent-budget-");
-  const memoryStateHome = makeMemoryState("codex-agent-budget-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -324,7 +327,7 @@ test("agent cost guard parks queued work without invoking the runner", async () 
 
 test("agent safety parking is idempotent for repeated runs", async () => {
   const agentHome = makeAgentHome("codex-agent-budget-idempotent-");
-  const memoryStateHome = makeMemoryState("codex-agent-budget-idempotent-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -344,7 +347,7 @@ test("agent safety parking is idempotent for repeated runs", async () => {
 
 test("agent queued task can resume after safety parking", async () => {
   const agentHome = makeAgentHome("codex-agent-resume-after-park-");
-  const memoryStateHome = makeMemoryState("codex-agent-resume-after-park-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -369,7 +372,7 @@ test("agent queued task can resume after safety parking", async () => {
 
 test("agent budget ledger blocks later tasks in the same run", async () => {
   const agentHome = makeAgentHome("codex-agent-partial-budget-");
-  const memoryStateHome = makeMemoryState("codex-agent-partial-budget-memory-");
+  const memoryStateHome = undefined;
   const first = submitAgentTask({
     agentHome,
     repo: "/repo/one",
@@ -399,7 +402,7 @@ test("agent budget ledger blocks later tasks in the same run", async () => {
 
 test("agent kill switch halts queued work without invoking the runner", async () => {
   const agentHome = makeAgentHome("codex-agent-kill-switch-");
-  const memoryStateHome = makeMemoryState("codex-agent-kill-switch-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -427,7 +430,7 @@ test("agent kill switch halts queued work without invoking the runner", async ()
 
 test("agent safety config fails closed when config is corrupt", async () => {
   const agentHome = makeAgentHome("codex-agent-corrupt-config-");
-  const memoryStateHome = makeMemoryState("codex-agent-corrupt-config-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -455,7 +458,7 @@ test("agent safety config fails closed when config is corrupt", async () => {
 
 test("agent safety config fails closed when config is non-object JSON", async () => {
   const agentHome = makeAgentHome("codex-agent-invalid-config-");
-  const memoryStateHome = makeMemoryState("codex-agent-invalid-config-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -492,7 +495,7 @@ test("agent rejects invalid budget values", () => {
 
 test("agent daily token budget can be disabled", async () => {
   const agentHome = makeAgentHome("codex-agent-budget-disabled-");
-  const memoryStateHome = makeMemoryState("codex-agent-budget-disabled-memory-");
+  const memoryStateHome = undefined;
   const task = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -534,7 +537,7 @@ test("kill switch still blocks when the daily token budget is disabled", () => {
 
 test("agent run advances at most one queued task per repo", async () => {
   const agentHome = makeAgentHome("codex-agent-repo-lock-");
-  const memoryStateHome = makeMemoryState("codex-agent-repo-lock-memory-");
+  const memoryStateHome = undefined;
   const first = submitAgentTask({
     agentHome,
     repo: "/repo/memory-river",
@@ -564,7 +567,6 @@ test("agent run advances at most one queued task per repo", async () => {
 
 test("agent CLI wires submit status and run", async () => {
   const agentHome = makeAgentHome("codex-agent-cli-");
-  const memoryStateHome = makeMemoryState("codex-agent-cli-memory-");
   const lines = [];
   const originalLog = console.log;
   console.log = (value) => lines.push(String(value));
@@ -579,7 +581,7 @@ test("agent CLI wires submit status and run", async () => {
       "--request",
       "Plan CLI wiring.",
     ]);
-    await runAgentCli(["run", "--state", agentHome, "--memory-state", memoryStateHome]);
+    await runAgentCli(["run", "--state", agentHome]);
     await runAgentCli(["status", "--state", agentHome]);
   } finally {
     console.log = originalLog;
@@ -1504,6 +1506,32 @@ test("agent CLI exchange redacts secret-bearing submit text instead of rejecting
   assert.equal(JSON.stringify(stored[0]).includes("abcdefghijklmnopqrstuvwxyz"), false);
 });
 
+test("Telegram bot tokens are scanned, redacted, and blocked from outbound replies", async () => {
+  const agentHome = makeAgentHome("codex-agent-telegram-token-secret-");
+  const token = `123456789:${"A".repeat(35)}`;
+  const text = `review ${token} please`;
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (value) => lines.push(String(value));
+
+  try {
+    await runAgentCli(["exchange-submit", "--state", agentHome, "--from", "codex", "--to", "opus", "--text", text]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(scanSecrets(text)[0].type, "telegram_bot_token");
+  assert.equal(redactSecrets(text).includes("[redacted:telegram_bot_token]"), true);
+  assert.equal(JSON.stringify(readJsonl(agentPaths(agentHome).exchangeMessages)).includes(token), false);
+
+  setAllowlistedConfig(agentHome, "user-chat");
+  const inbox = enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "222", text: "reply" });
+  assert.throws(
+    () => queueChatReply({ agentHome, inboxId: inbox.id, text }),
+    /Reply may contain a secret/,
+  );
+});
+
 test("agent CLI exchange from-file submit is accepted and persisted redacted", async () => {
   const agentHome = makeAgentHome("codex-agent-exchange-submit-file-secret-");
   const submitFile = path.join(agentHome, "request.txt");
@@ -1843,26 +1871,6 @@ test("memory adapter skips Memory River when disabled and fails closed when unav
 
 function makeAgentHome(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
-
-function makeMemoryState(prefix) {
-  const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  writeJsonl(statePaths(stateHome).memories, [{
-    id: "mem_agent_context",
-    scope: "repo:/repo/memory-river",
-    type: "workflow_rule",
-    content: "Memory-backed planning context should be included.",
-    status: "active",
-    confidence: "high",
-    evidence: ["/tmp/session.jsonl:1"],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    supersedes: [],
-    superseded_by: null,
-    tags: [],
-  }]);
-  writeJsonl(statePaths(stateHome).chunks, []);
-  return stateHome;
 }
 
 function setAllowlistedConfig(agentHome, userId) {

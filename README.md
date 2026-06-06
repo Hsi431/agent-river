@@ -23,16 +23,15 @@ This repository is early but usable for local smoke testing:
 
 - Node.js 20 or newer.
 - Optional: `codex` CLI for Codex execution.
-- Optional: `claude` CLI for the Opus exchange runner.
+- Optional: Claude Code 2.1.162 or newer for the Opus exchange runner.
 - Optional: `codex-memory-river` for Memory River context when memory is enabled.
 - Optional: a Telegram bot token for Telegram polling/bridge flows.
 
 ## Install
 
-From the repo:
+After checking out the repository:
 
 ```sh
-git clone <agent-river-repo-url> agent-river
 cd agent-river
 npm install
 npm test
@@ -132,6 +131,11 @@ node bin/codex-agent.js dispatch-show --state ~/.codex/agent --id dispatch_...
 
 ## Safety Model
 
+- The gateway allowlist grants operator access to bounded commands, plan-task
+  submission, and exchange messaging. It does not grant owner authority.
+- Owner authority additionally requires owner mode and membership in the direct
+  send user allowlist. Owner checks protect edit execution, callback approvals,
+  dispatch routing, and model controls.
 - Owner approvals are required before Telegram-driven edit execution.
 - Dispatch approval is routing consent only; Codex edit tasks still require the
   normal execution approval.
@@ -140,6 +144,22 @@ node bin/codex-agent.js dispatch-show --state ~/.codex/agent --id dispatch_...
 - Dangerous owner requests are declined with a manual-action notice.
 - Agent state under `~/.codex/agent` may contain raw local task/chat text. Keep
   it private and out of git.
+- Claude runner safety depends on Claude Code continuing to enforce headless
+  tool allowlists and rejecting compound commands that exceed an allowed Bash
+  pattern. Treat Claude Code upgrades as security-sensitive.
+
+See [`SECURITY.md`](SECURITY.md) for the threat model, external trust
+boundaries, vulnerability reporting, and deployment limitations.
+Contribution guidelines are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Known Limitations
+
+- Use one primary bridge/runner set per state directory. JSONL ledgers are not a
+  distributed multi-writer database.
+- Gateway use has token budgets and lane/chat limits, but no general per-user
+  request throttle.
+- Generated systemd units assume paths without whitespace. Review generated
+  files before enabling them.
 
 ## Verification
 

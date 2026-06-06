@@ -28,8 +28,8 @@ Remaining work:
 
 ### Documentation Cleanup
 
-- Keep `CODEX_AGENT_EXOSKELETON_ARCH_2026-05-29.md` as an archived design
-  snapshot.
+- Keep `docs/history/CODEX_AGENT_EXOSKELETON_ARCH_2026-05-29.md` as an archived
+  design snapshot.
 - Keep `docs/ARCHITECTURE.md` current with real implementation boundaries.
 - Document source-release installation clearly.
 - Document the deployment rule: code/settings changes require commit, settings

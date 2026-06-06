@@ -5,8 +5,8 @@ runners. The persistent agent is the Node orchestrator and its on-disk state;
 Codex and Claude are spawned as bounded workers for individual steps.
 
 This document describes the current implementation. The older
-`CODEX_AGENT_EXOSKELETON_ARCH_2026-05-29.md` file is a historical design
-snapshot.
+`docs/history/CODEX_AGENT_EXOSKELETON_ARCH_2026-05-29.md` file is a historical
+design snapshot.
 
 ## Core Model
 
@@ -49,6 +49,7 @@ The bridge handles:
 - owner commands and task callbacks,
 - model-selection callbacks,
 - queued reply delivery,
+- retryable gateway replies through a persistent Telegram outbox,
 - exchange reply notifications,
 - dispatch approval callbacks,
 - bounded Codex direct replies with approval and safety gates.
