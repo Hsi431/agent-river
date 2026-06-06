@@ -10,8 +10,8 @@ import { allowGatewayUser, setDailyTokenBudget, setTelegramCodexPolicy } from ".
 import { listPendingReplyApprovals } from "../src/agent/reply-approval.js";
 import { listTasks, writeTask } from "../src/agent/tasks.js";
 import { classifyOwnerActionMode, classifyOpusAsk } from "../src/agent/owner-mode.js";
-import { statePaths } from "codex-memory-river/src/paths.js";
-import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
+import { statePaths } from "../src/lib/paths.js";
+import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("owner mode Q&A auto-sends for allowlisted owner", async () => {
   const agentHome = makeAgentHome("codex-agent-owner-qa-");

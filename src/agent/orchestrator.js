@@ -1,8 +1,5 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
-import { formatContextBlock } from "codex-memory-river/src/context-block.js";
-import { preflight } from "codex-memory-river/src/preflight.js";
-import { resolveStateHome } from "codex-memory-river/src/paths.js";
 import {
   appendRun,
   approveTask,
@@ -17,7 +14,8 @@ import {
 import { runEditStep, runPlanStep } from "./worker.js";
 import { appendCost, checkSafety, getSafetyStatus, getTelegramCodexPolicy } from "./safety.js";
 import { makeOpusEditRunner } from "./exchange-runner.js";
-import { redactSecrets, scanSecrets } from "codex-memory-river/src/secret-scan.js";
+import { redactSecrets, scanSecrets } from "../lib/secret-scan.js";
+import { buildMemoryContextBlock } from "./memory-adapter.js";
 
 export const EDIT_VERIFY_COMMAND = ["npm", "test"];
 
@@ -115,7 +113,7 @@ async function runPlanOnlyTask({ agentHome, memoryStateHome, task, runner }) {
   let contextBlock;
   let workerResult;
   try {
-    contextBlock = await buildContextBlock({ memoryStateHome, repo: current.repo });
+    contextBlock = await buildContextBlock({ agentHome, memoryStateHome, repo: current.repo });
     workerResult = await runPlanStep({ task: current, contextBlock, runner });
   } catch (error) {
     // A throw (e.g. preflight or the runner failing) must not strand the task in
@@ -197,7 +195,7 @@ async function runEditTask({ agentHome, memoryStateHome, task, runner, execFileI
   let contextBlock;
   let workerResult;
   try {
-    contextBlock = await buildContextBlock({ memoryStateHome, repo: current.repo });
+    contextBlock = await buildContextBlock({ agentHome, memoryStateHome, repo: current.repo });
     workerResult = await runEditStep({ task: current, contextBlock, runner: effectiveRunner });
   } catch (error) {
     const diffStat = await captureGitDiff(current.repo, execImpl);
@@ -333,13 +331,11 @@ function safeOutput(text, maxChars = 1200) {
   return raw.length > maxChars ? `${raw.slice(0, maxChars - 3)}...` : raw;
 }
 
-async function buildContextBlock({ memoryStateHome, repo }) {
-  const stateHome = memoryStateHome || await resolveStateHome(undefined, { create: false });
-  const result = await preflight({
-    stateHome,
+async function buildContextBlock({ agentHome, memoryStateHome, repo }) {
+  const policy = getTelegramCodexPolicy(agentHome);
+  return buildMemoryContextBlock({
+    enabled: Boolean(memoryStateHome || policy.memory_enabled),
+    memoryStateHome,
     repo,
-    brief: true,
-    maxRecent: 3,
   });
-  return formatContextBlock(result, { brief: true });
 }

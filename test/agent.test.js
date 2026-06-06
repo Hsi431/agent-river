@@ -10,10 +10,11 @@ import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submit
 import { runPlanStep } from "../src/agent/worker.js";
 import { readRuns, transitionTask, writeTask } from "../src/agent/tasks.js";
 import { agentPaths } from "../src/agent/paths.js";
+import { buildMemoryContextBlock } from "../src/agent/memory-adapter.js";
 import { checkSafety, setDailyTokenBudget, setKillSwitch } from "../src/agent/safety.js";
 import { approveDispatch, createDispatchApproval } from "../src/agent/dispatch.js";
-import { statePaths } from "codex-memory-river/src/paths.js";
-import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
+import { statePaths } from "../src/lib/paths.js";
+import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("agent submit creates a queued plan task", () => {
   const agentHome = makeAgentHome("codex-agent-submit-");
@@ -88,6 +89,28 @@ test("agent run advances queued plan task to done and appends run log", async ()
   assert.equal(status.runs[0].step, "planning");
   assert.equal(readJsonl(agentPaths(agentHome).cost).length, 1);
   assert.ok(getAgentStatus({ agentHome }).safety.today.tokens > 0);
+});
+
+test("agent run works without Memory River when memory is not enabled", async () => {
+  const agentHome = makeAgentHome("codex-agent-run-no-memory-");
+  const task = submitAgentTask({
+    agentHome,
+    repo: "/repo/memory-river",
+    request: "Plan without memory.",
+  });
+  let prompt = "";
+
+  const result = await runAgentOnce({
+    agentHome,
+    runner: async (args) => {
+      prompt = args.prompt;
+      return { text: "ok", sessionPath: null, exit: 0, tokens: 1 };
+    },
+  });
+
+  assert.equal(result.advanced, 1);
+  assert.doesNotMatch(prompt, /Codex Memory River context|Memory-backed planning context/);
+  assert.equal(getAgentStatus({ agentHome, id: task.id }).task.status, "done");
 });
 
 test("plan prompt uses Traditional Chinese for owner-facing dispatch reports", async () => {
@@ -1767,12 +1790,55 @@ test("codex-reply-once rejects secret-like fake runner output", async () => {
   assert.equal(readJsonl(agentPaths(agentHome).chatReplies).length, 0);
 });
 
-test("codex-reply-once introduces no shell/network/exec and package exposes codex-agent", () => {
+test("codex-reply-once introduces no shell/network/exec and package exposes codex-agent without hard Memory River dependency", async () => {
   const source = fs.readFileSync(new URL("../src/agent/codex-reply.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /child_process|node:http|node:https|node:net|globalThis\.fetch|\bfetch\(|\bspawn\(|\bexecFile\(/);
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.bin["codex-agent"], "bin/codex-agent.js");
-  assert.equal(pkg.dependencies["codex-memory-river"], "file:../codex-memory-river");
+  assert.equal(pkg.dependencies?.["codex-memory-river"], undefined);
+});
+
+test("memory adapter skips Memory River when disabled and fails closed when unavailable", async () => {
+  const disabled = await buildMemoryContextBlock({
+    enabled: false,
+    repo: "/repo/memory-river",
+    importImpl: async () => {
+      throw new Error("should not import");
+    },
+  });
+  assert.equal(disabled, "");
+
+  await assert.rejects(
+    () => buildMemoryContextBlock({
+      enabled: true,
+      repo: "/repo/memory-river",
+      memoryStateHome: "/state/missing",
+      importImpl: async () => {
+        throw new Error("Cannot find package");
+      },
+    }),
+    (error) => {
+      assert.equal(error.reason, "memory_unavailable");
+      assert.match(error.message, /Memory River unavailable/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    () => buildMemoryContextBlock({
+      enabled: true,
+      repo: "/repo/memory-river",
+      memoryStateHome: "/state/broken",
+      preflightImpl: async () => {
+        throw new Error("preflight failed");
+      },
+      contextBlockImpl: () => "unused",
+    }),
+    (error) => {
+      assert.equal(error.reason, "memory_context_failed");
+      return true;
+    },
+  );
 });
 
 function makeAgentHome(prefix) {

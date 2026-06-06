@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
-import { shortHash } from "codex-memory-river/src/hash.js";
-import { appendJsonl, readJsonl } from "codex-memory-river/src/jsonl.js";
-import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
+import { shortHash } from "../lib/hash.js";
+import { appendJsonl, readJsonl } from "../lib/jsonl.js";
+import { scanSecrets } from "../lib/secret-scan.js";
 import { enqueueChatMessage, listPendingChatReplies, markChatReplySent } from "./chat.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { agentPaths } from "./paths.js";

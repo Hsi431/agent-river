@@ -2,11 +2,11 @@
 
 Local approval-gated Codex/Telegram agent control plane.
 
-Agent River keeps agent state under `~/.codex/agent` and can use
-`codex-memory-river` for JSONL helpers, secret scanning, and optional memory
-context. It is designed for a local operator: Telegram can queue, approve, and
-inspect work, but high-risk operations such as commit, push, deploy, install,
-and delete stay manual.
+Agent River keeps agent state under `~/.codex/agent`. It can optionally use
+Codex Memory River for memory context, but core Telegram, approval, dispatch,
+runner, ledger, and secret-scan flows do not require it. It is designed for a
+local operator: Telegram can queue, approve, and inspect work, but high-risk
+operations such as commit, push, deploy, install, and delete stay manual.
 
 ## Status
 
@@ -22,18 +22,16 @@ This repository is early but usable for local smoke testing:
 ## Requirements
 
 - Node.js 20 or newer.
-- A sibling checkout of `codex-memory-river`, because this package currently
-  depends on `file:../codex-memory-river`.
 - Optional: `codex` CLI for Codex execution.
 - Optional: `claude` CLI for the Opus exchange runner.
+- Optional: `codex-memory-river` for Memory River context when memory is enabled.
 - Optional: a Telegram bot token for Telegram polling/bridge flows.
 
 ## Install
 
-From a workspace that contains both sibling repos:
+From the repo:
 
 ```sh
-git clone <codex-memory-river-repo-url> codex-memory-river
 git clone <agent-river-repo-url> agent-river
 cd agent-river
 npm install
@@ -51,6 +49,21 @@ For development smoke tests, use an isolated state directory:
 
 ```sh
 node bin/codex-agent.js status --state .local-agent-state
+```
+
+Memory River is loaded only when enabled by policy or when `--memory-state` is
+passed to a command that builds model context. If the integration is requested
+but unavailable, Agent River fails closed with a clear `memory_unavailable` or
+`memory_context_failed` reason instead of crashing core startup.
+
+To opt in from a workspace containing both repos:
+
+```sh
+npm install --no-save ../codex-memory-river
+node bin/codex-agent.js telegram-codex-policy-set \
+  --state ~/.codex/agent \
+  --default-repo /path/to/repo \
+  --memory-enabled true
 ```
 
 ## Telegram Quickstart
@@ -134,6 +147,7 @@ Before publishing or deploying local changes:
 
 ```sh
 npm test
+npm run test:no-memory
 npm pack --dry-run
 git diff --check
 ```

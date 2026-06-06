@@ -16,11 +16,9 @@
     "README.md",
     "package.json"
   ],
-  "dependencies": {
-    "codex-memory-river": "file:../codex-memory-river"
-  },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "test:no-memory": "node scripts/no-memory-smoke.js"
   },
   "engines": {
     "node": ">=20"

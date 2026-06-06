@@ -1,8 +1,6 @@
 import { directReplyInstructionLines } from "./codex-reply.js";
 import { listChatInbox, listChatReplies } from "./chat.js";
-import { resolveStateHome } from "codex-memory-river/src/paths.js";
-import { preflight as defaultPreflight } from "codex-memory-river/src/preflight.js";
-import { formatContextBlock as defaultFormatContextBlock } from "codex-memory-river/src/context-block.js";
+import { buildMemoryContextBlock } from "./memory-adapter.js";
 
 const PER_MESSAGE_CHARS = 1000;
 
@@ -17,13 +15,21 @@ export async function buildTelegramReplyPrompt({
   historyMessages = 8,
   maxChars = 6000,
   memory = null,
-  preflightImpl = defaultPreflight,
-  contextBlockImpl = defaultFormatContextBlock,
+  preflightImpl,
+  contextBlockImpl,
+  importImpl,
 } = {}) {
   const parts = [...directReplyInstructionLines(), ""];
 
   if (memory && memory.repo) {
-    const block = await buildMemoryBlock(memory, preflightImpl, contextBlockImpl);
+    const block = await buildMemoryContextBlock({
+      enabled: true,
+      memoryStateHome: memory.stateHome,
+      repo: memory.repo,
+      preflightImpl,
+      contextBlockImpl,
+      importImpl,
+    });
     if (block && block.trim()) {
       parts.push("Codex Memory River context:", block, "");
     }
@@ -36,16 +42,6 @@ export async function buildTelegramReplyPrompt({
 
   parts.push("Incoming message:", String(inbox.text ?? ""));
   return parts.join("\n");
-}
-
-async function buildMemoryBlock(memory, preflightImpl, contextBlockImpl) {
-  try {
-    const stateHome = memory.stateHome || await resolveStateHome(undefined, { create: false });
-    const result = await preflightImpl({ stateHome, repo: memory.repo, brief: true, maxRecent: 3 });
-    return contextBlockImpl(result, { brief: true });
-  } catch {
-    throw Object.assign(new Error("Memory context failed"), { reason: "memory_context_failed" });
-  }
 }
 
 function buildThread(agentHome, inbox, historyMessages, maxChars) {

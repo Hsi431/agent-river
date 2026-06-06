@@ -1,6 +1,6 @@
-import { appendJsonl, readJsonl } from "codex-memory-river/src/jsonl.js";
-import { shortHash } from "codex-memory-river/src/hash.js";
-import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
+import { appendJsonl, readJsonl } from "../lib/jsonl.js";
+import { shortHash } from "../lib/hash.js";
+import { scanSecrets } from "../lib/secret-scan.js";
 import { submitExchangeMessage } from "./exchange.js";
 import { agentPaths } from "./paths.js";
 import { getPrimaryAgentId, readAgentConfig } from "./safety.js";

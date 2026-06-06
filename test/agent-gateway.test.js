@@ -8,8 +8,8 @@ import { handleGatewayMessage, parseGatewayCommand, safeGatewayReply } from "../
 import { agentPaths } from "../src/agent/paths.js";
 import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { listTasks, writeTask } from "../src/agent/tasks.js";
-import { statePaths } from "codex-memory-river/src/paths.js";
-import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
+import { statePaths } from "../src/lib/paths.js";
+import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("gateway parses status and submit commands", () => {
   assert.deepEqual(parseGatewayCommand("status"), {

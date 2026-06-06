@@ -21,8 +21,8 @@ import { agentPaths } from "../src/agent/paths.js";
 import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwitch, writeAgentConfig } from "../src/agent/safety.js";
 import { writeTask } from "../src/agent/tasks.js";
 import { createDispatchApproval, listDispatchApprovals } from "../src/agent/dispatch.js";
-import { statePaths } from "codex-memory-river/src/paths.js";
-import { readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
+import { statePaths } from "../src/lib/paths.js";
+import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("telegram adapter maps allowed updates to gateway replies", async () => {
   const agentHome = makeAgentHome("codex-agent-telegram-allowed-");

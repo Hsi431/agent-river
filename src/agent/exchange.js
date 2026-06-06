@@ -1,6 +1,6 @@
-import { appendJsonl, readJsonl, writeJsonl } from "codex-memory-river/src/jsonl.js";
-import { redactSecrets, scanSecrets } from "codex-memory-river/src/secret-scan.js";
-import { shortHash } from "codex-memory-river/src/hash.js";
+import { appendJsonl, readJsonl, writeJsonl } from "../lib/jsonl.js";
+import { redactSecrets, scanSecrets } from "../lib/secret-scan.js";
+import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 import { isExchangeAgentEnabled } from "./safety.js";
 

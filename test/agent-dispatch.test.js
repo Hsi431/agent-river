@@ -13,7 +13,7 @@ import {
 } from "../src/agent/dispatch.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { enableExchangeAgent, writeAgentConfig } from "../src/agent/safety.js";
-import { readJsonl } from "codex-memory-river/src/jsonl.js";
+import { readJsonl } from "../src/lib/jsonl.js";
 
 test("dispatch parser strips only a valid agent-dispatch block", () => {
   const parsed = parseDispatchProposal([

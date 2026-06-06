@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import { parseArgs, requireArg, validateValueOptions } from "codex-memory-river/src/args.js";
-import { resolveStateHome } from "codex-memory-river/src/paths.js";
+import { parseArgs, requireArg, validateValueOptions } from "../lib/args.js";
+import { resolveStateHome } from "../lib/paths.js";
 import {
   chatStatus,
   completeChatHandoff,

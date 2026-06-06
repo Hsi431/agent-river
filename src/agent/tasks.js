@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { appendJsonl, readJsonl } from "codex-memory-river/src/jsonl.js";
-import { shortHash } from "codex-memory-river/src/hash.js";
+import { appendJsonl, readJsonl } from "../lib/jsonl.js";
+import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 
 export function createTask({ agentHome, repo, request, mode = "plan", source = "cli", requester = "local", approval = "not_required", executor = "codex", chatId = null }) {

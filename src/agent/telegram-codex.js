@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { appendJsonl, readJsonl } from "codex-memory-river/src/jsonl.js";
+import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { chatReplyStateForInbox, inboxSummary, queueChatReply } from "./chat.js";
 import { buildTelegramReplyPrompt } from "./reply-context.js";
 import { realCodexRunner, realEditRunner, realPlanRunner, estimateReplyTokens } from "./codex-runner.js";
 import { approveReply, createReplyApproval, rejectReply } from "./reply-approval.js";
 import { canBuildDirectSendPrompt, evaluateDirectSend, recordDirectSendAttempt } from "./direct-send.js";
-import { scanSecrets } from "codex-memory-river/src/secret-scan.js";
+import { scanSecrets } from "../lib/secret-scan.js";
 import { pollTelegramOnce } from "./telegram.js";
 import { agentPaths } from "./paths.js";
 import { appendCost, checkSafety, getSafetyStatus, getTelegramCodexPolicy } from "./safety.js";
@@ -232,7 +232,7 @@ async function processInboxEntry({
   // Assemble the direct-reply prompt: instructions + (optional) Memory River
   // context + recent same-chat thread + the incoming message.
   const directPrompt = canBuildDirectSendPrompt({ inbox: latest, policy });
-  const memoryActive = Boolean(policy.memory_enabled && policy.default_repo && !directPrompt);
+  const memoryActive = Boolean((memoryStateHome || policy.memory_enabled) && policy.default_repo && !directPrompt);
   const buildPrompt = replyContextImpl || buildTelegramReplyPrompt;
   let prompt;
   try {
@@ -244,8 +244,8 @@ async function processInboxEntry({
       memory: memoryActive ? { repo: policy.default_repo, stateHome: memoryStateHome } : null,
     });
   } catch (error) {
-    if (error?.reason === "memory_context_failed") {
-      return summary({ agentHome, received, inbox_id: latest.id, reply_id: null, queued: false, reason: "memory_context_failed", sent: received.replies });
+    if (error?.reason === "memory_context_failed" || error?.reason === "memory_unavailable") {
+      return summary({ agentHome, received, inbox_id: latest.id, reply_id: null, queued: false, reason: error.reason, sent: received.replies });
     }
     throw error;
   }
