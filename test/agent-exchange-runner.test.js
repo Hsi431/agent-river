@@ -272,8 +272,8 @@ test("exchange runner writes a terminal blocked reply after max attempts", async
   seedMessages(agentHome, [eligible("msg_blocked")]);
   const failing = async () => ({ ok: false, timedOut: true });
 
-  const first = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, spawnImpl: failing });
-  const second = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, spawnImpl: failing });
+  const first = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: failing });
+  const second = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: failing });
   const replies = readJsonl(agentPaths(agentHome).exchangeReplies);
 
   assert.equal(first.reason, "failed_released");

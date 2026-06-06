@@ -10,6 +10,16 @@ import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwit
 import { listTasks, writeTask } from "../src/agent/tasks.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
+// Hermetic HOME: the gateway's @opus/@claude runner-readiness check reads the
+// default ~/.config/codex-agent/opus-runner-settings.json path. Redirect HOME to
+// an isolated temp dir with that file present so the ack tests do not depend on
+// the developer's real config (which made them pass locally but fail in clean CI).
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "codex-agent-gateway-home-"));
+process.env.HOME = TEST_HOME;
+const RUNNER_SETTINGS = path.join(TEST_HOME, ".config", "codex-agent", "opus-runner-settings.json");
+fs.mkdirSync(path.dirname(RUNNER_SETTINGS), { recursive: true });
+fs.writeFileSync(RUNNER_SETTINGS, "{}\n");
+
 test("gateway parses status and submit commands", () => {
   assert.deepEqual(parseGatewayCommand("status"), {
     command: "agent_status",
