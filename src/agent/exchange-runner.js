@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { agentPaths } from "./paths.js";
-import { checkSafety, getPrimaryAgentId, getTelegramCodexPolicy } from "./safety.js";
+import { checkSafety, getPrimaryAgentId, getTelegramCodexPolicy, isExchangeAgentEnabled } from "./safety.js";
 import {
   claimExchangeMessage,
   listExchangeInbox,
@@ -33,6 +33,28 @@ const SPAWN_OUTCOMES = new Set(["replied", "failed_released", "blocked_terminal"
 
 export function defaultRunnerSettingsPath() {
   return path.join(os.homedir(), ".config", "codex-agent", "opus-runner-settings.json");
+}
+
+// Shared readiness gate for the exchange runner. Used by the gateway @opus ack
+// and the Telegram owner reviewer-delegation so neither promises a reply the
+// runner cannot deliver. Includes the kill switch / token budget (checkSafety),
+// so a paused or budget-exhausted runner reports "not ready" instead of silently
+// queuing an exchange message that will never be processed (P3-4).
+export function runnerReadiness(agentHome, { requireAgentId = null, settingsPath = defaultRunnerSettingsPath() } = {}) {
+  if (requireAgentId && !isExchangeAgentEnabled(agentHome, requireAgentId)) {
+    return { ready: false, reason: "exchange agent 未啟用" };
+  }
+  if (!getTelegramCodexPolicy(agentHome).exchange_runner_enabled) {
+    return { ready: false, reason: "runner 未啟用" };
+  }
+  if (!fs.existsSync(settingsPath)) {
+    return { ready: false, reason: "runner 設定檔不存在" };
+  }
+  const guard = checkSafety(agentHome);
+  if (!guard.ok) {
+    return { ready: false, reason: guard.reason === "kill_switch" ? "kill switch 已啟用" : "已達每日 token 預算" };
+  }
+  return { ready: true, reason: null };
 }
 
 // Edit-capable restricted settings for Opus execution (separate, broader-than-

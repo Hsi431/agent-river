@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { sha256 } from "../lib/hash.js";
 import {
   appendRun,
   approveTask,
@@ -191,6 +193,7 @@ async function runEditTask({ agentHome, memoryStateHome, memoryContextImpl, task
     ? makeOpusEditRunner({ agentHome, execFileImpl: execImpl })
     : undefined);
   const headBefore = await captureGitHead(current.repo, execImpl);
+  const diffBefore = await captureGitState(current.repo, execImpl);
 
   let contextBlock;
   let workerResult;
@@ -198,7 +201,7 @@ async function runEditTask({ agentHome, memoryStateHome, memoryContextImpl, task
     contextBlock = await buildContextBlock({ agentHome, memoryStateHome, memoryContextImpl, repo: current.repo });
     workerResult = await runEditStep({ task: current, contextBlock, runner: effectiveRunner });
   } catch (error) {
-    const diffStat = await captureGitDiff(current.repo, execImpl);
+    const diffStat = formatGitDelta(diffBefore, await captureGitState(current.repo, execImpl));
     if (diffStat && isNoReplyError(error)) {
       workerResult = {
         text: "Edit changed files, but Codex produced no final reply. Wrapper verification captured the resulting diff.",
@@ -230,7 +233,7 @@ async function runEditTask({ agentHome, memoryStateHome, memoryContextImpl, task
   // including any side effects from the fixed verification command.
   const headAfter = await captureGitHead(current.repo, execImpl);
   const headChanged = Boolean(headBefore && headAfter && headBefore !== headAfter);
-  const diffStat = await captureGitDiff(current.repo, execImpl);
+  const diffStat = formatGitDelta(diffBefore, await captureGitState(current.repo, execImpl));
   const endedAt = new Date().toISOString();
 
   appendRun(agentHome, {
@@ -283,14 +286,159 @@ function isNoReplyError(error) {
   return /Codex produced no reply/i.test(String(error?.message ?? ""));
 }
 
-function captureGitDiff(repoDir, execImpl = execFile) {
+// Snapshot of the worktree relative to HEAD: tracked text-file line counts, the
+// set of tracked binary files that differ, and the set of untracked files. Taken
+// before and after the task so formatGitDelta can attribute only what the task
+// changed and exclude a pre-existing dirty worktree.
+function captureGitState(repoDir, execImpl = execFile) {
+  return Promise.all([
+    captureGitNumstat(repoDir, execImpl),
+    captureUntracked(repoDir, execImpl),
+  ]).then(([numstat, untracked]) => ({
+    stats: numstat.stats,
+    // Fingerprint binary and untracked files by content hash (not raw content),
+    // so an edit to a file that was ALREADY dirty/untracked before the task is
+    // detected by a changed hash rather than missed because the name is in both
+    // snapshots.
+    binary: fingerprintFiles(repoDir, numstat.binary),
+    untracked: fingerprintFiles(repoDir, untracked),
+  }));
+}
+
+// name -> sha256(content) | null. null means the file could not be read or sits
+// outside the repo; callers fail closed and never claim such a file as changed.
+function fingerprintFiles(repoDir, names) {
+  const out = new Map();
+  for (const name of names) {
+    out.set(name, hashRepoFile(repoDir, name));
+  }
+  return out;
+}
+
+function hashRepoFile(repoDir, name) {
+  try {
+    const root = fs.realpathSync(path.resolve(repoDir));
+    const resolved = path.resolve(root, name);
+    // Cheap string gate first.
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return null;
+    }
+    // A symlink final component must not be followed out of the repo: fail closed.
+    if (fs.lstatSync(resolved).isSymbolicLink()) {
+      return null;
+    }
+    // Resolve any symlinked intermediate directories and re-check containment, so
+    // readFileSync cannot follow a link inside the repo to a file outside it.
+    const real = fs.realpathSync(resolved);
+    if (real !== root && !real.startsWith(root + path.sep)) {
+      return null;
+    }
+    return sha256(fs.readFileSync(real));
+  } catch {
+    return null;
+  }
+}
+
+function captureGitNumstat(repoDir, execImpl = execFile) {
   return new Promise((resolve) => {
-    execImpl("git", ["diff", "HEAD", "--stat"], { cwd: repoDir, timeout: 10000 }, (error, stdout) => {
+    execImpl("git", ["diff", "HEAD", "--numstat"], { cwd: repoDir, timeout: 10000 }, (error, stdout) => {
       const raw = String(stdout || "").trim();
-      // Withhold diff if it contains secret-like patterns.
-      resolve(raw && scanSecrets(raw).length === 0 ? raw : "");
+      if (!raw || scanSecrets(raw).length > 0) {
+        resolve({ stats: new Map(), binary: new Set() });
+        return;
+      }
+      const stats = new Map();
+      const binary = new Set();
+      for (const line of raw.split("\n")) {
+        const [added, deleted, ...rest] = line.split("\t");
+        const name = rest.join("\t");
+        if (!name) continue;
+        // numstat reports binary files as "-\t-": no line counts to subtract.
+        if (added === "-" || deleted === "-") {
+          binary.add(name);
+        } else {
+          stats.set(name, { added: Number(added) || 0, deleted: Number(deleted) || 0 });
+        }
+      }
+      resolve({ stats, binary });
     });
   });
+}
+
+function captureUntracked(repoDir, execImpl = execFile) {
+  return new Promise((resolve) => {
+    execImpl("git", ["ls-files", "--others", "--exclude-standard"], { cwd: repoDir, timeout: 10000 }, (error, stdout) => {
+      const raw = String(stdout || "").trim();
+      if (!raw || scanSecrets(raw).length > 0) {
+        resolve(new Set());
+        return;
+      }
+      resolve(new Set(raw.split("\n").filter(Boolean)));
+    });
+  });
+}
+
+// Reports only what the task changed by subtracting the pre-task snapshot from
+// the post-task one: tracked text deltas, plus binary files and untracked files
+// that appeared during the task. Pre-existing dirty files (same in both
+// snapshots) are excluded.
+//
+// Known limitation: tracked text deltas are the absolute difference of numstat
+// counts, so an edit to a file that was ALREADY dirty before the task — and that
+// nets the same added/deleted line counts, or that reverts a pre-existing hunk —
+// can be under-reported or shown without direction. This only shapes the
+// owner-facing summary; headChanged / approval gating is unaffected.
+function formatGitDelta(before, after) {
+  const lines = [];
+  let files = 0;
+  let insertions = 0;
+  let deletions = 0;
+  for (const name of new Set([...before.stats.keys(), ...after.stats.keys()])) {
+    const current = after.stats.get(name) || { added: 0, deleted: 0 };
+    const prior = before.stats.get(name) || { added: 0, deleted: 0 };
+    const added = Math.abs(current.added - prior.added);
+    const deleted = Math.abs(current.deleted - prior.deleted);
+    if (added === 0 && deleted === 0) continue;
+    files += 1;
+    insertions += added;
+    deletions += deleted;
+    lines.push(` ${name} | ${added + deleted} ${"+".repeat(added)}${"-".repeat(deleted)}`);
+  }
+  for (const [name, hash] of after.binary) {
+    if (changedFingerprint(before.binary, name, hash)) {
+      files += 1;
+      lines.push(` ${name} | Bin (changed)`);
+    }
+  }
+  for (const [name, hash] of after.untracked) {
+    if (!before.untracked.has(name)) {
+      // New untracked file. Fail closed: only claim it if we could read it.
+      if (hash === null) continue;
+      files += 1;
+      lines.push(` ${name} | new file`);
+    } else if (changedFingerprint(before.untracked, name, hash)) {
+      files += 1;
+      lines.push(` ${name} | changed`);
+    }
+  }
+  if (files === 0) return "";
+  lines.push(` ${files} file${files === 1 ? "" : "s"} changed, ${insertions} insertion${insertions === 1 ? "" : "s"}(+), ${deletions} deletion${deletions === 1 ? "" : "s"}(-)`);
+  return lines.join("\n");
+}
+
+// True only when the task demonstrably changed the file's content. A file that
+// newly appeared in this snapshot counts as changed (if readable); an entry
+// present in both is changed only when the hashes differ. Any null hash means we
+// could not read/hash it, so we fail closed and do not claim a change.
+function changedFingerprint(beforeMap, name, afterHash) {
+  if (!beforeMap.has(name)) {
+    return afterHash !== null;
+  }
+  const beforeHash = beforeMap.get(name);
+  if (beforeHash === null || afterHash === null) {
+    return false;
+  }
+  return beforeHash !== afterHash;
 }
 
 function captureGitHead(repoDir, execImpl = execFile) {

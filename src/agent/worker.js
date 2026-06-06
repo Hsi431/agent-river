@@ -11,12 +11,23 @@ export async function runEditStep({ task, contextBlock, runner = fakeRunner } = 
     "",
     `Repo: ${task.repo}`,
     `Request: ${task.request}`,
+    ...planHandoffLines(task),
     "",
     ...languageInstructionLines(task),
     "Edit the relevant files, run the test suite to verify, and return a concise summary of what you changed and what the tests showed.",
   ].join("\n");
 
   return runner({ prompt, task, step: "editing" });
+}
+
+function planHandoffLines(task) {
+  if (!task?.parent_task_id || !task?.plan_summary) {
+    return [];
+  }
+  return [
+    `Approved plan source: ${task.parent_task_id}`,
+    `Approved plan:\n${task.plan_summary}`,
+  ];
 }
 
 export async function runPlanStep({ task, contextBlock, runner = fakeRunner } = {}) {

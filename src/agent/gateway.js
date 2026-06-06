@@ -7,8 +7,7 @@ import { createTask, readTask } from "./tasks.js";
 import { realPlanRunner } from "./codex-runner.js";
 import { getExchangeThread, listExchangeInbox, listExchangeReplies, submitExchangeMessage } from "./exchange.js";
 import { getPrimaryAgentId, getTelegramCodexPolicy, isExchangeAgentEnabled, isGatewayUserAllowed, setTelegramCodexPolicy } from "./safety.js";
-import { runExchangeRunnerOnce, defaultRunnerSettingsPath } from "./exchange-runner.js";
-import fs from "node:fs";
+import { runExchangeRunnerOnce, runnerReadiness } from "./exchange-runner.js";
 import {
   classifyOpusAsk,
   isOwner,
@@ -26,18 +25,11 @@ function defaultRunnerTrigger({ agentHome }) {
   runExchangeRunnerOnce({ agentHome }).catch(() => {});
 }
 
-// Synchronous preflight so an @opus ack never falsely promises a reply: the
-// runner only processes when it is enabled AND its restricted settings file
-// exists (fail-closed). Mirrors the runner's own gates without spawning.
+// Synchronous preflight so an @opus ack never falsely promises a reply. Shares
+// the runner readiness gate (enabled + settings file + kill switch / budget) so
+// a paused or budget-exhausted runner is reported instead of silently queuing.
 function opusRunnerReadiness(agentHome) {
-  const policy = getTelegramCodexPolicy(agentHome);
-  if (!policy.exchange_runner_enabled) {
-    return { ready: false, reason: "runner 未啟用" };
-  }
-  if (!fs.existsSync(defaultRunnerSettingsPath())) {
-    return { ready: false, reason: "runner 設定檔不存在" };
-  }
-  return { ready: true, reason: null };
+  return runnerReadiness(agentHome);
 }
 
 export async function handleGatewayMessage({ agentHome, userId, chatId, text, memoryStateHome, runner, execFileImpl, runnerTrigger }) {

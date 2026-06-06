@@ -9,9 +9,17 @@ import { canBuildDirectSendPrompt, evaluateDirectSend, recordDirectSendAttempt }
 import { scanSecrets } from "../lib/secret-scan.js";
 import { pollTelegramOnce } from "./telegram.js";
 import { agentPaths } from "./paths.js";
-import { appendCost, checkSafety, getSafetyStatus, getTelegramCodexPolicy } from "./safety.js";
-import { createTask, readTask, writeTask } from "./tasks.js";
+import {
+  appendCost,
+  checkSafety,
+  getPrimaryAgentId,
+  getSafetyStatus,
+  getTelegramCodexPolicy,
+} from "./safety.js";
+import { createTask, listTasks, readTask, writeTask } from "./tasks.js";
 import { approveAgentTask, rejectAgentTask, runAgentOnce } from "./orchestrator.js";
+import { submitExchangeMessage } from "./exchange.js";
+import { runExchangeRunnerOnce, runnerReadiness } from "./exchange-runner.js";
 import {
   classifyOwnerInbound,
   isMalformedOwnerTaskCommand,
@@ -21,6 +29,7 @@ import {
   OWNER_COMMAND_UNRECOGNIZED_NOTICE,
   OWNER_DANGEROUS_ACTION_NOTICE,
   OWNER_NO_REPO_NOTICE,
+  OWNER_PLAN_NOT_FOUND_NOTICE,
   OWNER_QA_FALLBACK_NOTICE,
   OWNER_REPLY_APPROVE_FAILED_NOTICE,
   OWNER_REPLY_REJECT_FAILED_NOTICE,
@@ -38,6 +47,8 @@ import {
   parseOwnerReplyApprovalCommand,
   parseOwnerTaskCommand,
   recordOwnerDecision,
+  isPreviousPlanFollowup,
+  reviewerDelegationTarget,
 } from "./owner-mode.js";
 
 // Single-shot manual Telegram <-> Codex reply cycle. Explicit, gated, no loop.
@@ -63,6 +74,8 @@ export async function telegramCodexOnce({
   perChatIntervalSeconds,
   globalIntervalSeconds,
   replyContextImpl,
+  reviewerReadinessImpl,
+  exchangeRunnerTrigger,
   longPollSeconds = 0,
   lockTtlSeconds = DEFAULT_LOCK_TTL_SECONDS,
   now = Date.now(),
@@ -87,7 +100,8 @@ export async function telegramCodexOnce({
   try {
     return await runCycle({
       agentHome, transport, memoryStateHome, token, fetchImpl, execFileImpl, requestImpl,
-      runner, inboxId, requireReplyApproval, perChatInterval, globalInterval, policy, replyContextImpl, longPollSeconds, now,
+      runner, inboxId, requireReplyApproval, perChatInterval, globalInterval, policy, replyContextImpl,
+      reviewerReadinessImpl, exchangeRunnerTrigger, longPollSeconds, now,
     });
   } finally {
     releaseLock(agentHome);
@@ -96,7 +110,8 @@ export async function telegramCodexOnce({
 
 async function runCycle({
   agentHome, transport, memoryStateHome, token, fetchImpl, execFileImpl, requestImpl,
-  runner, inboxId, requireReplyApproval, perChatInterval, globalInterval, policy, replyContextImpl, longPollSeconds, now,
+  runner, inboxId, requireReplyApproval, perChatInterval, globalInterval, policy, replyContextImpl,
+  reviewerReadinessImpl, exchangeRunnerTrigger, longPollSeconds, now,
 }) {
   const poll = (extra = {}) => pollTelegramOnce({
     agentHome, transport, token, fetchImpl, execFileImpl, requestImpl, memoryStateHome, ...extra,
@@ -138,7 +153,8 @@ async function runCycle({
     processed.add(latest.id);
     last = await processInboxEntry({
       agentHome, poll, memoryStateHome, execFileImpl, runner, requireReplyApproval,
-      perChatInterval, globalInterval, policy, replyContextImpl, now, received, latest,
+      perChatInterval, globalInterval, policy, replyContextImpl, reviewerReadinessImpl,
+      exchangeRunnerTrigger, now, received, latest,
     });
     targets = inboxSummary(agentHome).messages
       .filter((entry) => !before.has(entry.id) && !processed.has(entry.id));
@@ -148,7 +164,8 @@ async function runCycle({
 
 async function processInboxEntry({
   agentHome, poll, memoryStateHome, execFileImpl, runner, requireReplyApproval,
-  perChatInterval, globalInterval, policy, replyContextImpl, now, received, latest,
+  perChatInterval, globalInterval, policy, replyContextImpl, reviewerReadinessImpl,
+  exchangeRunnerTrigger, now, received, latest,
 }) {
   // Idempotency: do not invoke the model if a reply for this inbox already exists.
   const replyState = chatReplyStateForInbox(agentHome, latest.id);
@@ -174,8 +191,23 @@ async function processInboxEntry({
       return handled;
     }
     const owner = classifyOwnerInbound(latest.text, policy);
+    if (owner.kind === "blocked") {
+      return handleOwnerControlRequest({ agentHome, poll, now, received, latest, owner, policy });
+    }
+    const delegated = await handleOwnerReviewerDelegation({
+      agentHome, poll, now, received, latest, policy, reviewerReadinessImpl, exchangeRunnerTrigger,
+    });
+    if (delegated) {
+      return delegated;
+    }
+    // A "照這個 plan 修正/做/執行" follow-up is an edit hand-off even when the
+    // generic action classifier reads it as plan/qa (e.g. "做" is not an edit
+    // verb). Force the edit lane so the plan hand-off path runs (P3-2).
+    const effectiveOwner = owner.kind !== "dangerous_request" && isPreviousPlanFollowup(latest.text)
+      ? { ...owner, kind: "edit_request" }
+      : owner;
     const handledOwnerControl = await handleOwnerControlRequest({
-      agentHome, poll, now, received, latest, owner, policy,
+      agentHome, poll, now, received, latest, owner: effectiveOwner, policy,
     });
     if (handledOwnerControl) {
       return handledOwnerControl;
@@ -209,7 +241,10 @@ async function processInboxEntry({
         const sendResult = await poll();
         return summary({ agentHome, received, inbox_id: latest.id, reply_id: reply.id, queued: true, reason: "owner_action_no_repo", sent: sendResult.replies });
       }
-      const created = createTask({ agentHome, repo: policy.default_repo, request: latest.text, mode: "plan", source: "telegram", requester: "owner" });
+      const created = createTask({
+        agentHome, repo: policy.default_repo, request: latest.text, mode: "plan",
+        source: "telegram", requester: "owner", chatId: latest.chat_id, userId: latest.user_id,
+      });
       const planRunner = runner || ((args) => realPlanRunner({ ...args, execFileImpl, agentHome }));
       let task = created;
       try {
@@ -468,7 +503,33 @@ async function handleOwnerControlRequest({ agentHome, poll, now, received, lates
       const sendResult = await poll();
       return summary({ agentHome, received, inbox_id: latest.id, reply_id: reply.id, queued: true, reason: "owner_edit_no_repo", sent: sendResult.replies });
     }
-    const created = createTask({ agentHome, repo: policy.default_repo, request: latest.text, mode: "edit", source: "telegram", requester: "owner" });
+    const isFollowup = isPreviousPlanFollowup(latest.text);
+    const plan = isFollowup
+      ? findPlanForFollowup(agentHome, {
+        chatId: latest.chat_id,
+        userId: latest.user_id,
+        repo: policy.default_repo,
+        text: latest.text,
+      })
+      : null;
+    if (isFollowup && !plan) {
+      const reply = queueChatReply({ agentHome, inboxId: latest.id, text: OWNER_PLAN_NOT_FOUND_NOTICE, source: "owner_mode" });
+      recordOwnerDecision({ agentHome, inbox: latest, kind: "owner_edit", decision: "blocked_missing_plan", replyText: OWNER_PLAN_NOT_FOUND_NOTICE, reasons: ["missing_plan"], now });
+      const sendResult = await poll();
+      return summary({ agentHome, received, inbox_id: latest.id, reply_id: reply.id, queued: true, reason: "owner_plan_not_found", sent: sendResult.replies });
+    }
+    const created = createTask({
+      agentHome,
+      repo: policy.default_repo,
+      request: latest.text,
+      mode: "edit",
+      source: "telegram",
+      requester: "owner",
+      chatId: latest.chat_id,
+      userId: latest.user_id,
+      parentTaskId: plan?.id,
+      planSummary: plan?.result?.summary,
+    });
     const notice = ownerEditActionNotice(created.id);
     const reply = queueChatReply({ agentHome, inboxId: latest.id, text: notice, source: "owner_mode", replyMarkup: ownerTaskReplyMarkup(created.id) });
     recordOwnerDecision({ agentHome, inbox: latest, kind: "owner_edit", decision: "approval_required", taskId: created.id, replyText: notice, reasons: owner.reasons, now });
@@ -485,7 +546,10 @@ async function handleOwnerControlRequest({ agentHome, poll, now, received, lates
       const sendResult = await poll();
       return summary({ agentHome, received, inbox_id: latest.id, reply_id: reply.id, queued: true, reason: "owner_action_no_repo", sent: sendResult.replies });
     }
-    const created = createTask({ agentHome, repo: policy.default_repo, request: latest.text, mode: "plan", source: "telegram", requester: "owner" });
+    const created = createTask({
+      agentHome, repo: policy.default_repo, request: latest.text, mode: "plan",
+      source: "telegram", requester: "owner", chatId: latest.chat_id, userId: latest.user_id,
+    });
     const ts = new Date(now).toISOString();
     const task = {
       ...created,
@@ -505,6 +569,86 @@ async function handleOwnerControlRequest({ agentHome, poll, now, received, lates
   }
 
   return null;
+}
+
+async function handleOwnerReviewerDelegation({
+  agentHome,
+  poll,
+  now,
+  received,
+  latest,
+  policy,
+  reviewerReadinessImpl,
+  exchangeRunnerTrigger,
+}) {
+  const target = reviewerDelegationTarget(latest.text);
+  if (!target) {
+    return null;
+  }
+  const readiness = reviewerReadinessImpl
+    ? reviewerReadinessImpl({ agentHome, target })
+    : runnerReadiness(agentHome, { requireAgentId: target });
+  if (!readiness.ready) {
+    const notice = `無法送交 Claude review：${readiness.reason}。`;
+    const reply = queueChatReply({ agentHome, inboxId: latest.id, text: notice, source: "owner_mode" });
+    recordOwnerDecision({ agentHome, inbox: latest, kind: "owner_reviewer_delegation", decision: "unavailable", replyText: notice, reasons: [readiness.reason], now });
+    const sendResult = await poll();
+    return summary({ agentHome, received, inbox_id: latest.id, reply_id: reply.id, queued: true, reason: "reviewer_unavailable", sent: sendResult.replies });
+  }
+  const message = submitExchangeMessage({
+    agentHome,
+    from: getPrimaryAgentId(agentHome),
+    to: target,
+    channel: "telegram",
+    chatId: latest.chat_id,
+    text: latest.text,
+  });
+  const trigger = exchangeRunnerTrigger || ((args) => runExchangeRunnerOnce(args).catch(() => {}));
+  try {
+    trigger({ agentHome });
+  } catch {
+    // The durable message remains queued for the timer runner.
+  }
+  const notice = `已送交 Claude review（${message.id}），完成或失敗後會回報。`;
+  const reply = queueChatReply({ agentHome, inboxId: latest.id, text: notice, source: "owner_mode" });
+  recordOwnerDecision({ agentHome, inbox: latest, kind: "owner_reviewer_delegation", decision: "submitted", replyText: notice, reasons: [], now });
+  const sendResult = await poll();
+  return summary({ agentHome, received, inbox_id: latest.id, reply_id: reply.id, queued: true, reason: "reviewer_delegated", sent: sendResult.replies });
+}
+
+// Selects the plan a "照這個 plan 修正" follow-up refers to. A plan only matches
+// when it is done, has a summary, and shares the same chat, user, and repo as the
+// follow-up (P3-3). An explicit task_... id in the follow-up text wins, but only
+// if it still meets every condition; otherwise we fail closed and never fall back
+// to a different plan. Without an explicit id, the newest matching plan by
+// created_at is used (not filename order).
+function findPlanForFollowup(agentHome, { chatId, userId, repo, text }) {
+  const repoResolved = safeResolve(repo);
+  const userKey = userId == null || userId === "" ? null : String(userId);
+  const matches = (task) => Boolean(task
+    && task.mode === "plan"
+    && task.status === "done"
+    && task.result?.summary
+    && task.chat_id === String(chatId)
+    && (task.user_id ?? null) === userKey
+    && safeResolve(task.repo) === repoResolved);
+  const explicit = String(text || "").match(/\btask_[A-Za-z0-9_-]+\b/);
+  if (explicit) {
+    const task = readTask(agentHome, explicit[0]);
+    return matches(task) ? task : null;
+  }
+  return listTasks(agentHome)
+    .filter(matches)
+    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")))
+    .at(-1) || null;
+}
+
+function safeResolve(value) {
+  try {
+    return path.resolve(String(value || ""));
+  } catch {
+    return "";
+  }
 }
 
 // Accept both a plain string reply (injected test runners, legacy) and a richer

@@ -6,10 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { telegramCodexOnce } from "../src/agent/telegram-codex.js";
 import { agentPaths } from "../src/agent/paths.js";
-import { allowGatewayUser, setDailyTokenBudget, setTelegramCodexPolicy } from "../src/agent/safety.js";
+import { allowGatewayUser, enableExchangeAgent, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { listPendingReplyApprovals } from "../src/agent/reply-approval.js";
-import { listTasks, writeTask } from "../src/agent/tasks.js";
-import { classifyOwnerActionMode, classifyOpusAsk } from "../src/agent/owner-mode.js";
+import { createTask, listTasks, writeTask } from "../src/agent/tasks.js";
+import { runnerReadiness } from "../src/agent/exchange-runner.js";
+import { classifyOwnerActionMode, classifyOpusAsk, isPreviousPlanFollowup, reviewerDelegationTarget } from "../src/agent/owner-mode.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 
 test("owner mode Q&A auto-sends for allowlisted owner", async () => {
@@ -73,6 +74,78 @@ test("owner mode action request creates pending task and sends notice without mo
   ]);
   assert.equal(audit[0].kind, "owner_action");
   assert.equal(audit[0].decision, "approval_required");
+});
+
+test("owner natural-language Claude review request goes directly to exchange", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-review-delegation-");
+  allowGatewayUser(agentHome, "123");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true,
+    direct_send_user_add: "123",
+    owner_mode_enabled: true,
+    exchange_runner_enabled: true,
+    default_repo: "/repo",
+  });
+  const calls = [];
+  let triggered = 0;
+
+  const result = await telegramCodexOnce({
+    agentHome,
+    token: "t",
+    allowRealCodex: true,
+    globalIntervalSeconds: 0,
+    reviewerReadinessImpl: () => ({ ready: true, reason: null }),
+    exchangeRunnerTrigger: () => { triggered += 1; },
+    runner: async () => { throw new Error("Codex must not run"); },
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({
+      updateId: 21,
+      fromId: 123,
+      chatId: 456,
+      text: "你直接發 review 要求給 opus，讓他 review 完直接傳給你",
+    })], []]),
+  });
+
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+  assert.equal(result.reason, "reviewer_delegated");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].to, "opus");
+  assert.equal(messages[0].chat_id, "456");
+  assert.equal(listTasks(agentHome).length, 0);
+  assert.equal(triggered, 1);
+  assert.equal(calls.some((call) => call.method === "sendMessage" && call.body.text.includes(messages[0].id)), true);
+});
+
+test("owner natural-language Claude review request reports unavailable without fallback", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-review-unavailable-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true,
+    direct_send_user_add: "123",
+    owner_mode_enabled: true,
+    default_repo: "/repo",
+  });
+  const calls = [];
+
+  const result = await telegramCodexOnce({
+    agentHome,
+    token: "t",
+    allowRealCodex: true,
+    globalIntervalSeconds: 0,
+    reviewerReadinessImpl: () => ({ ready: false, reason: "runner 未啟用" }),
+    runner: async () => { throw new Error("Codex must not substitute"); },
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({
+      updateId: 22,
+      fromId: 123,
+      chatId: 456,
+      text: "請交給 Claude review 完再回報",
+    })], []]),
+  });
+
+  assert.equal(result.reason, "reviewer_unavailable");
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 0);
+  assert.equal(listTasks(agentHome).length, 0);
+  assert.equal(calls.some((call) => call.method === "sendMessage" && call.body.text.includes("runner 未啟用")), true);
 });
 
 test("owner mode low-risk action runs plan once without approval", async () => {
@@ -356,6 +429,61 @@ test("owner mode edit request creates pending edit task and sends notice without
   assert.equal(audit[0].decision, "approval_required");
 });
 
+test("owner follow-up edit carries the latest completed plan from the same chat", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-plan-handoff-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true,
+    direct_send_user_add: "123",
+    owner_mode_enabled: true,
+    default_repo: "/repo",
+  });
+  const calls = [];
+
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
+    runner: async () => ({ text: "1. 修改 routing\n2. 加入回歸測試", sessionPath: null, exit: 0, tokens: 5 }),
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 23, fromId: 123, chatId: 456, text: "幫我檢查並規劃怎麼修" })], []]),
+  });
+  const plan = listTasks(agentHome)[0];
+
+  const result = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
+    runner: async () => { throw new Error("edit must remain pending"); },
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 24, fromId: 123, chatId: 456, text: "你直接照這個 plan 修正" })], []]),
+  });
+  const edit = listTasks(agentHome).find((task) => task.mode === "edit");
+
+  assert.equal(result.reason, "owner_edit_request");
+  assert.equal(plan.status, "done");
+  assert.equal(plan.chat_id, "456");
+  assert.equal(edit.parent_task_id, plan.id);
+  assert.equal(edit.plan_summary, plan.result.summary);
+  assert.equal(edit.approval, "pending");
+});
+
+test("owner follow-up edit without a same-chat plan is rejected before task creation", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-plan-missing-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true,
+    direct_send_user_add: "123",
+    owner_mode_enabled: true,
+    default_repo: "/repo",
+  });
+  const calls = [];
+
+  const result = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    runner: async () => { throw new Error("runner must not run"); },
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 25, fromId: 123, chatId: 456, text: "你直接照這個 plan 修正" })], []]),
+  });
+
+  assert.equal(result.reason, "owner_plan_not_found");
+  assert.equal(listTasks(agentHome).length, 0);
+  assert.equal(calls.some((call) => call.method === "sendMessage" && call.body.text.includes("找不到這個對話中最近完成的 plan")), true);
+});
+
 test("owner mode dangerous request is declined without creating a task", async () => {
   const agentHome = makeAgentHome("codex-agent-owner-dangerous-");
   allowGatewayUser(agentHome, "123");
@@ -426,6 +554,40 @@ test("owner approve edit task runs edit step and reports diff", async () => {
   assert.equal(sends.some((call) => call.body.text.includes("utils.js")), true);
   assert.equal(sends.some((call) => call.body.text.includes("驗證：pass")), true);
   assert.equal(sends.some((call) => call.body.text.includes("Fixed the bug in utils.js")), true);
+});
+
+test("owner edit does not attribute a pre-existing dirty diff to the task", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-edit-existing-diff-");
+  const repo = makeGitRepo("codex-agent-owner-edit-existing-diff-repo-");
+  fs.writeFileSync(path.join(repo, "LICENSE"), "before\n");
+  execFileSync("git", ["add", "LICENSE"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "add license"], { cwd: repo, stdio: "ignore" });
+  fs.writeFileSync(path.join(repo, "LICENSE"), "existing user edit\n");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true,
+    direct_send_user_add: "123",
+    owner_mode_enabled: true,
+    default_repo: repo,
+  });
+  const calls = [];
+
+  const created = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    runner: async () => "pending",
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 26, fromId: 123, chatId: 456, text: "幫我修正 routing" })], []]),
+  });
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    execFileImpl: fakeEditExec(),
+    runner: async () => ({ text: "No file changes were needed.", sessionPath: null, exit: 0, tokens: 1 }),
+    fetchImpl: sequencedFetch(calls, [[telegramUpdate({ updateId: 27, fromId: 123, chatId: 456, text: `approve ${created.approval_id}` })], []]),
+  });
+  const task = listTasks(agentHome).find((entry) => entry.id === created.approval_id);
+
+  assert.equal(task.status, "done");
+  assert.equal(task.result.diff_stat, null);
+  assert.equal(fs.readFileSync(path.join(repo, "LICENSE"), "utf8"), "existing user edit\n");
 });
 
 test("owner approve edit task records failed wrapper verification without failing edit", async () => {
@@ -585,6 +747,14 @@ test("classifyOwnerActionMode identifies dangerous, edit, and plan requests", ()
   assert.equal(classifyOwnerActionMode("review the code"), "plan");
   assert.equal(classifyOwnerActionMode("run a check"), "plan");
   assert.equal(classifyOwnerActionMode("what is the status"), "plan");
+});
+
+test("owner follow-up and reviewer delegation classifiers stay narrow", () => {
+  assert.equal(isPreviousPlanFollowup("你直接照這個 plan 修正"), true);
+  assert.equal(isPreviousPlanFollowup("請規劃一個新的 plan"), false);
+  assert.equal(reviewerDelegationTarget("請發 review 要求給 opus"), "opus");
+  assert.equal(reviewerDelegationTarget("請問 Claude review 是什麼"), null);
+  assert.equal(reviewerDelegationTarget("你自己 review 一下"), null);
 });
 
 test("classifyOpusAsk routes conversation, edit lanes, dangerous, and blocked", () => {
@@ -1302,6 +1472,334 @@ function fakeCodexExec(planText) {
     callback(null, "tokens used 5\n", "");
     return { stdin: { on() {}, write() {}, end() {} } };
   };
+}
+
+test("reviewer delegation fires on review intent without a hand-off verb (P2-1)", () => {
+  assert.equal(reviewerDelegationTarget("請 Claude review 這個 patch"), "opus");
+  assert.equal(reviewerDelegationTarget("Opus 幫我 review 一下"), "opus");
+  assert.equal(reviewerDelegationTarget("你自己 review 一下"), null);
+  assert.equal(reviewerDelegationTarget("不要交給 Claude review"), null);
+  assert.equal(reviewerDelegationTarget("請問 Claude review 是什麼"), null);
+});
+
+test("plan follow-up recognizes trailing verbs and English phrasings (P3-2)", () => {
+  assert.equal(isPreviousPlanFollowup("照這個 plan 做"), true);
+  assert.equal(isPreviousPlanFollowup("照這個 plan 執行"), true);
+  assert.equal(isPreviousPlanFollowup("apply this plan"), true);
+  assert.equal(isPreviousPlanFollowup("use the previous plan"), true);
+  assert.equal(isPreviousPlanFollowup("follow that plan"), true);
+  assert.equal(isPreviousPlanFollowup("請規劃一個新的 plan"), false);
+});
+
+test("owner Claude review without a hand-off verb still routes to exchange (P2-1)", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-review-noverb-");
+  allowGatewayUser(agentHome, "123");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true,
+    exchange_runner_enabled: true, default_repo: "/repo",
+  });
+
+  const result = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    reviewerReadinessImpl: () => ({ ready: true, reason: null }),
+    exchangeRunnerTrigger: () => {},
+    runner: async () => { throw new Error("Codex must not run"); },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 30, fromId: 123, chatId: 456, text: "請 Claude review 這個 patch" })], []]),
+  });
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+
+  assert.equal(result.reason, "reviewer_delegated");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].to, "opus");
+  assert.equal(listTasks(agentHome).length, 0);
+});
+
+test("plan follow-up with a non-edit verb still creates an edit with hand-off (P3-2)", async () => {
+  const agentHome = makeAgentHome("codex-agent-plan-followup-verb-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo",
+  });
+  const plan = seedDonePlan(agentHome, { chatId: "456", userId: "123", repo: "/repo", summary: "PLAN BODY" });
+
+  const result = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
+    runner: async () => { throw new Error("edit must remain pending"); },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 31, fromId: 123, chatId: 456, text: "照這個 plan 做" })], []]),
+  });
+  const edit = listTasks(agentHome).find((t) => t.mode === "edit");
+
+  assert.equal(result.reason, "owner_edit_request");
+  assert.equal(edit.parent_task_id, plan.id);
+  assert.equal(edit.plan_summary, "PLAN BODY");
+});
+
+test("plan follow-up matches only same chat, user, repo, newest first (P3-3)", async () => {
+  const agentHome = makeAgentHome("codex-agent-plan-select-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo-a",
+  });
+  seedDonePlan(agentHome, { chatId: "456", userId: "123", repo: "/repo-a", summary: "OLD", createdAt: "2026-01-01T00:00:00.000Z" });
+  const newer = seedDonePlan(agentHome, { chatId: "456", userId: "123", repo: "/repo-a", summary: "NEW", createdAt: "2026-02-01T00:00:00.000Z" });
+  seedDonePlan(agentHome, { chatId: "999", userId: "123", repo: "/repo-a", summary: "OTHER CHAT", createdAt: "2026-03-01T00:00:00.000Z" });
+  seedDonePlan(agentHome, { chatId: "456", userId: "777", repo: "/repo-a", summary: "OTHER USER", createdAt: "2026-03-01T00:00:00.000Z" });
+  seedDonePlan(agentHome, { chatId: "456", userId: "123", repo: "/repo-b", summary: "OTHER REPO", createdAt: "2026-03-01T00:00:00.000Z" });
+
+  const result = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
+    runner: async () => { throw new Error("pending"); },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 40, fromId: 123, chatId: 456, text: "照這個 plan 修正" })], []]),
+  });
+  const edit = listTasks(agentHome).find((t) => t.mode === "edit");
+
+  assert.equal(result.reason, "owner_edit_request");
+  assert.equal(edit.parent_task_id, newer.id);
+  assert.equal(edit.plan_summary, "NEW");
+});
+
+test("plan follow-up honors an explicit task id and fails closed on mismatch (P3-3)", async () => {
+  const agentHome = makeAgentHome("codex-agent-plan-explicit-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo-a",
+  });
+  const older = seedDonePlan(agentHome, { chatId: "456", userId: "123", repo: "/repo-a", summary: "OLD", createdAt: "2026-01-01T00:00:00.000Z" });
+  seedDonePlan(agentHome, { chatId: "456", userId: "123", repo: "/repo-a", summary: "NEW", createdAt: "2026-02-01T00:00:00.000Z" });
+
+  const picked = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
+    runner: async () => { throw new Error("pending"); },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 41, fromId: 123, chatId: 456, text: `照 ${older.id} 這個 plan 修正` })], []]),
+  });
+  assert.equal(picked.reason, "owner_edit_request");
+  assert.equal(listTasks(agentHome).find((t) => t.mode === "edit").parent_task_id, older.id);
+
+  const otherChat = seedDonePlan(agentHome, { chatId: "999", userId: "123", repo: "/repo-a", summary: "X", createdAt: "2026-03-01T00:00:00.000Z" });
+  const failed = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
+    runner: async () => { throw new Error("pending"); },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 42, fromId: 123, chatId: 456, text: `照 ${otherChat.id} 這個 plan 修正` })], []]),
+  });
+  assert.equal(failed.reason, "owner_plan_not_found");
+});
+
+test("runner readiness reports kill switch without promising a reply (P3-4)", () => {
+  const agentHome = makeAgentHome("codex-agent-runner-readiness-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const settings = path.join(makeAgentHome("codex-agent-readiness-settings-"), "settings.json");
+  fs.writeFileSync(settings, "{}\n");
+
+  assert.equal(runnerReadiness(agentHome, { requireAgentId: "opus", settingsPath: settings }).ready, true);
+
+  setKillSwitch(agentHome, true);
+  const blocked = runnerReadiness(agentHome, { requireAgentId: "opus", settingsPath: settings });
+  assert.equal(blocked.ready, false);
+  assert.match(blocked.reason, /kill switch/);
+});
+
+test("owner edit reports a new untracked file the task created (P3-1)", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-edit-newfile-");
+  const repo = makeGitRepo("codex-agent-owner-edit-newfile-repo-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: repo,
+  });
+
+  const created = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    runner: async () => "pending",
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 50, fromId: 123, chatId: 456, text: "幫我修正 routing" })], []]),
+  });
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    execFileImpl: fakeEditExec(),
+    runner: async ({ task }) => {
+      fs.writeFileSync(path.join(task.repo, "added.js"), "export const added = true;\n");
+      return { text: "Added a module.", sessionPath: null, exit: 0, tokens: 1 };
+    },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 51, fromId: 123, chatId: 456, text: `approve ${created.approval_id}` })], []]),
+  });
+  const task = listTasks(agentHome).find((t) => t.id === created.approval_id);
+
+  assert.equal(task.status, "done");
+  assert.match(task.result.diff_stat, /added\.js \| new file/);
+});
+
+test("owner edit reports a binary change instead of dropping it (P3-1)", async () => {
+  const agentHome = makeAgentHome("codex-agent-owner-edit-binary-");
+  const repo = makeGitRepo("codex-agent-owner-edit-binary-repo-");
+  fs.writeFileSync(path.join(repo, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]));
+  execFileSync("git", ["add", "logo.png"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "add binary"], { cwd: repo, stdio: "ignore" });
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: repo,
+  });
+
+  const created = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    runner: async () => "pending",
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 52, fromId: 123, chatId: 456, text: "幫我修正 routing" })], []]),
+  });
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    execFileImpl: fakeEditExec(),
+    runner: async ({ task }) => {
+      fs.writeFileSync(path.join(task.repo, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xee, 0xdd, 0xcc]));
+      return { text: "Updated binary.", sessionPath: null, exit: 0, tokens: 1 };
+    },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 53, fromId: 123, chatId: 456, text: `approve ${created.approval_id}` })], []]),
+  });
+  const task = listTasks(agentHome).find((t) => t.id === created.approval_id);
+
+  assert.equal(task.status, "done");
+  assert.match(task.result.diff_stat, /logo\.png \| Bin \(changed\)/);
+});
+
+test("plan follow-up rejects questions, status checks, and negations (Finding 1)", () => {
+  assert.equal(isPreviousPlanFollowup("你有照這個 plan 做嗎？"), false);
+  assert.equal(isPreviousPlanFollowup("為什麼沒有照這個 plan 執行？"), false);
+  assert.equal(isPreviousPlanFollowup("這個 plan 執行了嗎？"), false);
+  assert.equal(isPreviousPlanFollowup("照這個 plan 做"), true);
+  assert.equal(isPreviousPlanFollowup("apply this plan"), true);
+});
+
+test("reviewer delegation rejects English negations (Finding 2)", () => {
+  assert.equal(reviewerDelegationTarget("Claude should not review this"), null);
+  assert.equal(reviewerDelegationTarget("Claude must not review this"), null);
+  assert.equal(reviewerDelegationTarget("Do not have Claude review this"), null);
+  assert.equal(reviewerDelegationTarget("Please have Claude review this"), "opus");
+});
+
+test("plan follow-up question does not create an edit task (Finding 1)", async () => {
+  const agentHome = makeAgentHome("codex-agent-plan-question-");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: "/repo",
+  });
+  seedDonePlan(agentHome, { chatId: "456", userId: "123", repo: "/repo", summary: "PLAN BODY" });
+
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0, perChatIntervalSeconds: 0,
+    runner: async () => ({ text: "回答你的問題。", sessionPath: null, exit: 0, tokens: 1 }),
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 60, fromId: 123, chatId: 456, text: "你有照這個 plan 做嗎？" })], []]),
+  });
+
+  assert.equal(listTasks(agentHome).some((t) => t.mode === "edit"), false);
+});
+
+test("owner edit reports a pre-existing untracked file the task modified (Finding 3)", async () => {
+  const agentHome = makeAgentHome("codex-agent-edit-pre-untracked-");
+  const repo = makeGitRepo("codex-agent-edit-pre-untracked-repo-");
+  fs.writeFileSync(path.join(repo, "scratch.txt"), "original\n"); // untracked before the task
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: repo,
+  });
+
+  const created = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    runner: async () => "pending",
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 61, fromId: 123, chatId: 456, text: "幫我修正 routing" })], []]),
+  });
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    execFileImpl: fakeEditExec(),
+    runner: async ({ task }) => {
+      fs.writeFileSync(path.join(task.repo, "scratch.txt"), "modified by task\n");
+      return { text: "Touched scratch.txt", sessionPath: null, exit: 0, tokens: 1 };
+    },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 62, fromId: 123, chatId: 456, text: `approve ${created.approval_id}` })], []]),
+  });
+  const task = listTasks(agentHome).find((t) => t.id === created.approval_id);
+
+  assert.equal(task.status, "done");
+  assert.match(task.result.diff_stat, /scratch\.txt \| changed/);
+});
+
+test("owner edit reports a pre-existing dirty binary the task modified (Finding 3)", async () => {
+  const agentHome = makeAgentHome("codex-agent-edit-pre-binary-");
+  const repo = makeGitRepo("codex-agent-edit-pre-binary-repo-");
+  fs.writeFileSync(path.join(repo, "asset.bin"), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+  execFileSync("git", ["add", "asset.bin"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "add bin"], { cwd: repo, stdio: "ignore" });
+  fs.writeFileSync(path.join(repo, "asset.bin"), Buffer.from([0x00, 0x01, 0x02, 0xaa])); // pre-existing dirty
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: repo,
+  });
+
+  const created = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    runner: async () => "pending",
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 63, fromId: 123, chatId: 456, text: "幫我修正 routing" })], []]),
+  });
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    execFileImpl: fakeEditExec(),
+    runner: async ({ task }) => {
+      fs.writeFileSync(path.join(task.repo, "asset.bin"), Buffer.from([0x00, 0x01, 0x02, 0xbb]));
+      return { text: "Touched asset.bin", sessionPath: null, exit: 0, tokens: 1 };
+    },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 64, fromId: 123, chatId: 456, text: `approve ${created.approval_id}` })], []]),
+  });
+  const task = listTasks(agentHome).find((t) => t.id === created.approval_id);
+
+  assert.equal(task.status, "done");
+  assert.match(task.result.diff_stat, /asset\.bin \| Bin \(changed\)/);
+});
+
+test("owner edit fails closed on an untracked symlink pointing outside the repo (P2)", async () => {
+  const agentHome = makeAgentHome("codex-agent-edit-symlink-");
+  const repo = makeGitRepo("codex-agent-edit-symlink-repo-");
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-agent-outside-"));
+  const secret = path.join(outsideDir, "secret.txt");
+  fs.writeFileSync(secret, "outside content\n");
+  allowGatewayUser(agentHome, "123");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_enabled: true, direct_send_user_add: "123", owner_mode_enabled: true, default_repo: repo,
+  });
+
+  const created = await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    runner: async () => "pending",
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 65, fromId: 123, chatId: 456, text: "幫我修正 routing" })], []]),
+  });
+  await telegramCodexOnce({
+    agentHome, token: "t", allowRealCodex: true, globalIntervalSeconds: 0,
+    execFileImpl: fakeEditExec(),
+    runner: async ({ task }) => {
+      // Task drops an untracked symlink inside the repo pointing OUTSIDE it.
+      fs.symlinkSync(secret, path.join(task.repo, "link.txt"));
+      fs.writeFileSync(path.join(task.repo, "utils.js"), "export const fixed = true;\n");
+      return { text: "edit", sessionPath: null, exit: 0, tokens: 1 };
+    },
+    fetchImpl: sequencedFetch([], [[telegramUpdate({ updateId: 66, fromId: 123, chatId: 456, text: `approve ${created.approval_id}` })], []]),
+  });
+  const task = listTasks(agentHome).find((t) => t.id === created.approval_id);
+
+  assert.equal(task.status, "done");
+  // The symlink must be fail-closed (never followed/claimed); the real edit shows.
+  assert.equal(String(task.result.diff_stat || "").includes("link.txt"), false);
+  assert.match(task.result.diff_stat, /utils\.js/);
+});
+
+function seedDonePlan(agentHome, { chatId, userId, repo, summary = "step", createdAt }) {
+  const task = createTask({
+    agentHome, repo, request: summary, mode: "plan",
+    source: "telegram", requester: "owner", chatId, userId,
+  });
+  const done = {
+    ...task,
+    status: "done",
+    ...(createdAt ? { created_at: createdAt } : {}),
+    result: { ...task.result, summary },
+  };
+  writeTask(agentHome, done);
+  return done;
 }
 
 function fakeEditExec({ verifyExit = 0, verifyStdout = "", verifyStderr = "", calls = [] } = {}) {

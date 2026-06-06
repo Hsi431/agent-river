@@ -4,7 +4,20 @@ import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 
-export function createTask({ agentHome, repo, request, mode = "plan", source = "cli", requester = "local", approval = "not_required", executor = "codex", chatId = null }) {
+export function createTask({
+  agentHome,
+  repo,
+  request,
+  mode = "plan",
+  source = "cli",
+  requester = "local",
+  approval = "not_required",
+  executor = "codex",
+  chatId = null,
+  userId = null,
+  parentTaskId = null,
+  planSummary = null,
+}) {
   if (!repo) {
     throw new Error("Missing required --repo");
   }
@@ -35,6 +48,9 @@ export function createTask({ agentHome, repo, request, mode = "plan", source = "
     mode,
     executor,
     chat_id: chatId ? String(chatId) : null,
+    user_id: userId ? String(userId) : null,
+    parent_task_id: parentTaskId ? String(parentTaskId) : null,
+    plan_summary: planSummary ? String(planSummary) : null,
     status: "queued",
     approval,
     worktree: null,

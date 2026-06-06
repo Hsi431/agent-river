@@ -7,7 +7,7 @@ import { runAgentCli } from "../src/agent/cli.js";
 import { createChatDraft, createChatHandoff, enqueueChatMessage, queueChatReply } from "../src/agent/chat.js";
 import { codexReplyOnce } from "../src/agent/codex-reply.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "../src/agent/orchestrator.js";
-import { runPlanStep } from "../src/agent/worker.js";
+import { runEditStep, runPlanStep } from "../src/agent/worker.js";
 import { readRuns, transitionTask, writeTask } from "../src/agent/tasks.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { buildMemoryContextBlock } from "../src/agent/memory-adapter.js";
@@ -135,6 +135,28 @@ test("plan prompt uses Traditional Chinese for owner-facing dispatch reports", a
   assert.match(prompt, /Reply in the owner's language/);
   assert.match(prompt, /Traditional Chinese/);
   assert.match(prompt, /return that owner-facing report directly/i);
+});
+
+test("edit prompt includes the approved plan handoff", async () => {
+  let prompt = "";
+  await runEditStep({
+    task: {
+      id: "task_edit_handoff",
+      repo: "/repo/agent-river",
+      request: "照這個 plan 修正",
+      parent_task_id: "task_plan_source",
+      plan_summary: "1. 修正 routing\n2. 加入回歸測試",
+      chat_id: "456",
+    },
+    contextBlock: "",
+    runner: async (args) => {
+      prompt = args.prompt;
+      return { text: "done", sessionPath: null, exit: 0, tokens: 1 };
+    },
+  });
+
+  assert.match(prompt, /Approved plan source: task_plan_source/);
+  assert.match(prompt, /1\. 修正 routing/);
 });
 
 test("agent run skips tasks pending approval until approved", async () => {

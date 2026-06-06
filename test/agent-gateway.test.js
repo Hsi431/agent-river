@@ -443,7 +443,7 @@ test("owner @opus low-risk edit auto-approves, runs opus executor, reports", asy
   const result = await handleGatewayMessage({
     agentHome, userId: "123", text: "@opus fix the typo in utils.js",
     runner: async () => ({ text: "Fixed the typo.", sessionPath: null, exit: 0, tokens: 4 }),
-    execFileImpl: stubEditExec({ diffStat: " utils.js | 2 +-\n", calls: execCalls }),
+    execFileImpl: stubEditExec({ diffNumstat: "1\t1\tutils.js\n", calls: execCalls }),
     runnerTrigger: () => {},
   });
   const task = listTasks(agentHome)[0];
@@ -1301,12 +1301,16 @@ function makeOwner(agentHome, userId, repo) {
 
 // Stubs git + npm for runEditTask without a real repo: stable HEAD (no commit),
 // a canned diff stat, and a passing verify command.
-function stubEditExec({ diffStat = "", verifyExit = 0, calls = [] } = {}) {
+function stubEditExec({ diffNumstat = "", verifyExit = 0, calls = [] } = {}) {
+  let diffCalls = 0;
   return (file, args, options, callback) => {
     calls.push({ file, args });
     const a = args.join(" ");
     if (file === "git" && a === "rev-parse HEAD") { callback(null, "hash1\n", ""); }
-    else if (file === "git" && a === "diff HEAD --stat") { callback(null, diffStat, ""); }
+    else if (file === "git" && a === "diff HEAD --numstat") {
+      diffCalls += 1;
+      callback(null, diffCalls === 1 ? "" : diffNumstat, "");
+    }
     else if (file === "npm" && a === "test") {
       callback(verifyExit === 0 ? null : Object.assign(new Error("npm test failed"), { code: verifyExit }), "ok\n", "");
     } else { callback(null, "", ""); }

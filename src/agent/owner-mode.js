@@ -14,6 +14,7 @@ export const OWNER_REPLY_REJECTED_NOTICE = "已拒絕這則回覆。";
 export const OWNER_REPLY_APPROVE_FAILED_NOTICE = "無法核准這則回覆。請確認 approval id 仍在 pending 狀態。";
 export const OWNER_REPLY_REJECT_FAILED_NOTICE = "無法拒絕這則回覆。請確認 approval id 仍在 pending 狀態。";
 export const OWNER_DANGEROUS_ACTION_NOTICE = "這個操作（commit/push/deploy/delete/install 等）需要在本機手動執行，Telegram 不會自動處理。";
+export const OWNER_PLAN_NOT_FOUND_NOTICE = "找不到這個對話中最近完成的 plan，未建立 edit 任務。請指定 task id 或重新產生 plan。";
 
 export function ownerEditActionNotice(taskId) {
   return `已建立待批准 edit 任務（${taskId}），等待你核准後才會修改檔案。`;
@@ -154,6 +155,59 @@ export function classifyOwnerActionMode(text) {
   if (isDangerousActionRequest(raw)) return "dangerous";
   if (isEditActionRequest(raw)) return "edit";
   return "plan";
+}
+
+export function isPreviousPlanFollowup(text) {
+  const raw = String(text ?? "").trim();
+  // Only an explicit execution request builds an edit. Questions ("...做嗎？"),
+  // status checks ("...執行了嗎？"), and negations ("為什麼沒有...執行") must not.
+  if (/[?？]/.test(raw)) {
+    return false;
+  }
+  if (/(嗎|呢|為什麼|為何|是否|有沒有|沒有|沒能|尚未|未|別)/.test(raw)) {
+    return false;
+  }
+  if (/\b(?:did|didn'?t|do(?:es)?n'?t|why|whether|haven'?t|hasn'?t|was|were)\b/i.test(raw)) {
+    return false;
+  }
+  // English: follow/apply/use/reuse [this|that|the|previous|above] plan.
+  if (/\b(?:follow|apply|use|reuse)\b(?:\s+\w+){0,2}\s+plan\b/i.test(raw)) {
+    return true;
+  }
+  // Chinese: 照/依/按照/根據 [這個/剛才/...] plan, or 這個/剛才/... plan. The trailing
+  // verb is intentionally NOT required, so "照這個 plan 做" / "...執行" / "...修正"
+  // all route through the edit lane (P3-2).
+  return /(?:按照|依照|根據|照|依)\s*(?:這個|剛才|剛剛|上面|前面)?\s*(?:的)?\s*plan/i.test(raw)
+    || /(?:這個|剛才|剛剛|上面|前面)\s*(?:的)?\s*plan/i.test(raw);
+}
+
+export function reviewerDelegationTarget(text) {
+  const raw = String(text ?? "").trim();
+  // Delegation requires naming the reviewer (Opus/Claude) AND a review intent.
+  // A hand-off verb is NOT required: "請 Claude review 這個 patch" must route (P2-1).
+  if (!/(?:opus|claude)/i.test(raw)) {
+    return null;
+  }
+  if (!(/\breview\b/i.test(raw) || /(審查|檢查程式碼|看過|幫我看)/.test(raw))) {
+    return null;
+  }
+  // Owner wants the current agent to review it, not the named reviewer.
+  if (/\b(?:yourself|myself|self)\b/i.test(raw) || /(你自己|我自己|自己來)/.test(raw)) {
+    return null;
+  }
+  // A question *about* the reviewer/review ("Claude review 是什麼"), not a request.
+  if (/(?:是什麼|是甚麼|什麼是|甚麼是|什麼意思|怎麼用|如何用)/.test(raw)
+    || /\bwhat\s+(?:is|are|does)\b/i.test(raw)) {
+    return null;
+  }
+  // Explicit refusal to hand the review to the reviewer (either word order:
+  // "don't have Claude review" / "Claude should not review").
+  if (/(?:不要|不用|別|無需|不需要)\s*(?:交給|給|讓|找|用|請|送給|丟給)?\s*(?:opus|claude)/i.test(raw)
+    || /\b(?:should not|shouldn'?t|must not|mustn'?t|do not|don'?t|does not|doesn'?t|no need to|without|never)\b[^.!?]{0,20}\b(?:opus|claude)\b/i.test(raw)
+    || /\b(?:opus|claude)\b[^.!?]{0,20}\b(?:should not|shouldn'?t|must not|mustn'?t|do not|don'?t|does not|doesn'?t|never)\b/i.test(raw)) {
+    return null;
+  }
+  return "opus";
 }
 
 // Routes an owner @opus message into a lane:
