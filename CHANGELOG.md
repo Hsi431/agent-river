@@ -4,6 +4,8 @@ All notable changes to Agent River will be documented in this file.
 
 ## Unreleased
 
+## v0.1.1 — 2026-06-06
+
 ### Changed
 - Model controls (`agent config opus-model` / `codex-model`) now require owner
   authority, matching the inline model buttons. A gateway-allowlisted operator
