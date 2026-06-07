@@ -19,6 +19,7 @@ import {
   listActiveTurns,
 } from "../src/agent/v2/kill.js";
 import { handleV2Message } from "../src/agent/v2/poller.js";
+import { makeClaudeAdapter } from "../src/agent/v2/agent-adapter.js";
 import { telegramCodexBridge } from "../src/agent/telegram-codex-bridge.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { setTelegramCodexPolicy } from "../src/agent/safety.js";
@@ -64,6 +65,52 @@ test("§15.B/C: terminateGroup kills the whole detached group incl. grandchild",
   const res = await terminateGroup(child.pid, { graceMs: 300 });
   assert.equal(res.confirmed, true, "terminateGroup must confirm the group is gone");
   assert.equal(groupGone(child.pid), true, "no group member should remain");
+});
+
+test("§15.B/C: abort does not resolve until the group is confirmed gone, even if the exec callback fires mid-termination", async () => {
+  // round-4 (Codex finding #1): the exec callback fires the moment the DIRECT
+  // child dies from SIGTERM; it must NOT win the settle while a grandchild is
+  // still alive. Assert the run resolves only after the whole group is ESRCH.
+  const tree = spawn(
+    process.execPath,
+    [
+      "-e",
+      "const cp=require('node:child_process');cp.spawn(process.execPath,['-e','setInterval(()=>{},1e9)'],{stdio:'ignore'});setInterval(()=>{},1e9);",
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  tree.unref();
+  const realPid = tree.pid;
+
+  let execCb = null;
+  const execImpl = (_file, _args, _opts, cb) => {
+    execCb = cb;
+    return { pid: realPid, stdin: { on() {}, write() {}, end() {} } };
+  };
+
+  const { signal, controller } = makeTurnController();
+  const adapter = makeClaudeAdapter({ agentHome: makeAgentHome("v2-race-") });
+  const runP = adapter.run({
+    repoToplevel: "/tmp/x",
+    mode: "read",
+    prompt: "hi",
+    execFileImpl: execImpl,
+    signal,
+  });
+
+  // Let the adapter register its abort listener, then abort.
+  await new Promise((r) => setImmediate(r));
+  controller.abort();
+  // Simulate the direct child dying from SIGTERM mid-termination.
+  setTimeout(
+    () => execCb && execCb(Object.assign(new Error("killed"), { killed: true, signal: "SIGTERM" }), "", ""),
+    20,
+  );
+
+  const res = await runP;
+  assert.equal(groupGone(realPid), true, "group must be confirmed gone before run resolves");
+  assert.equal(res.ok, false);
+  assert.notEqual(res.outcome, "ok");
 });
 
 test("§15.B/C: stopAllTurns terminates a registered real child and clears the registry", async () => {

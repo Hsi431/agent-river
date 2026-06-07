@@ -11,7 +11,7 @@ import {
   releaseExchangeClaim,
   replyExchangeMessage,
 } from "./exchange.js";
-import { DISPATCH_CHANNEL } from "./dispatch.js";
+import { DISPATCH_CHANNEL, dispatchTargetAllowlist } from "./dispatch.js";
 import { realCodexRunner } from "./codex-runner.js";
 
 // Codex-side exchange auto-runner (v1). Single-shot: pick at most one eligible
@@ -161,7 +161,10 @@ export async function runCodexExchangeRunnerOnce({
 // module allowed to call `codex exec`). Logs stdout to logPath best-effort.
 async function defaultCodexRunner({ prompt, cwd, agentHome, timeoutSeconds, logPath, execFileImpl } = {}) {
   try {
-    const result = await realCodexRunner({ prompt, execFileImpl, cwd, agentHome });
+    const timeoutMs = Number.isFinite(Number(timeoutSeconds)) && Number(timeoutSeconds) > 0
+      ? Number(timeoutSeconds) * 1000
+      : undefined;
+    const result = await realCodexRunner({ prompt, execFileImpl, cwd, agentHome, timeoutMs });
     if (logPath) {
       try {
         fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -199,8 +202,13 @@ export function buildCodexPrompt({ agentHome, msgId, repoDir }) {
 }
 
 export function pickEligibleCodexMessage(agentHome) {
+  // Sender allowlist: only trusted agents (the primary agent + enabled exchange
+  // agents, e.g. opus) may auto-task codex. A message from any other source is
+  // NOT picked up by the runner, mirroring the opus runner's from-filter.
+  const allowedSenders = dispatchTargetAllowlist(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
     .filter((message) => message.to === RUNNER_AGENT
+      && allowedSenders.has(String(message.from))
       && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));

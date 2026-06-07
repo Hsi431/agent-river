@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runCodexExchangeRunnerOnce, pickEligibleCodexMessage, buildCodexPrompt } from "../src/agent/codex-exchange-runner.js";
+import { realCodexRunner } from "../src/agent/codex-runner.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
@@ -59,6 +60,7 @@ function latestClaim(agentHome, messageId) {
 test("codex runner is off by default and never claims or spawns", async () => {
   const agentHome = makeAgentHome("codex-xrunner-off-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   seedMessages(agentHome, [eligible("msg_off")]);
   let spawned = 0;
 
@@ -75,6 +77,7 @@ test("codex runner is off by default and never claims or spawns", async () => {
 test("codex runner only picks to=codex channel=telegram/dispatch open messages, oldest first", async () => {
   const agentHome = makeAgentHome("codex-xrunner-gating-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [
     eligible("msg_good", { createdAt: "2026-06-03T10:00:00.000Z" }),
@@ -101,6 +104,7 @@ test("codex runner only picks to=codex channel=telegram/dispatch open messages, 
 test("codex runner picks dispatch-channel messages addressed to codex", async () => {
   const agentHome = makeAgentHome("codex-xrunner-dispatch-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [
     eligible("msg_dispatch", {
@@ -122,7 +126,9 @@ test("codex runner picks dispatch-channel messages addressed to codex", async ()
 
 test("codex runner claims before running and does not spawn when claim fails", async () => {
   const agentHome = makeAgentHome("codex-xrunner-claim-fail-");
-  // codex NOT enabled -> claim throws
+  // opus is a trusted sender (so the message is eligible), but codex is NOT
+  // enabled -> the claim by codex throws.
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [eligible("msg_claimfail")]);
   let spawned = 0;
@@ -139,6 +145,7 @@ test("codex runner claims before running and does not spawn when claim fails", a
 test("codex runner: claim is active before run executes", async () => {
   const agentHome = makeAgentHome("codex-xrunner-claim-active-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [eligible("msg_active")]);
   let claimedAtRun = null;
@@ -160,6 +167,7 @@ test("codex runner: claim is active before run executes", async () => {
 test("codex runner success: reply written, dispatch row recorded", async () => {
   const agentHome = makeAgentHome("codex-xrunner-success-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [eligible("msg_ok")]);
   const beforeMessages = readJsonl(agentPaths(agentHome).exchangeMessages);
@@ -182,6 +190,7 @@ test("codex runner success: reply written, dispatch row recorded", async () => {
 test("codex runner redacts secrets from reply text", async () => {
   const agentHome = makeAgentHome("codex-xrunner-redact-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [eligible("msg_secret")]);
 
@@ -201,6 +210,7 @@ test("codex runner redacts secrets from reply text", async () => {
 test("codex runner releases claim and retries when run produces no reply", async () => {
   const agentHome = makeAgentHome("codex-xrunner-retry-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_max_attempts: 2 });
   seedMessages(agentHome, [eligible("msg_retry")]);
 
@@ -220,6 +230,7 @@ test("codex runner releases claim and retries when run produces no reply", async
 test("codex runner writes terminal blocked reply after max attempts", async () => {
   const agentHome = makeAgentHome("codex-xrunner-blocked-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_max_attempts: 2 });
   seedMessages(agentHome, [eligible("msg_blocked")]);
 
@@ -238,6 +249,7 @@ test("codex runner writes terminal blocked reply after max attempts", async () =
 test("codex runner lock prevents a second concurrent runner", async () => {
   const agentHome = makeAgentHome("codex-xrunner-lock-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [eligible("msg_lock")]);
   // Write a fresh lock so the runner sees it as held.
@@ -257,6 +269,7 @@ test("codex runner lock prevents a second concurrent runner", async () => {
 test("codex runner honors the daily dispatch cap", async () => {
   const agentHome = makeAgentHome("codex-xrunner-daily-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_daily_max: 1 });
   seedMessages(agentHome, [eligible("msg_daily")]);
   writeJsonl(agentPaths(agentHome).codexExchangeRunnerDispatch, [{
@@ -277,6 +290,7 @@ test("--agent codex routes to codex runner (exchange-runner CLI case)", async ()
   // We test the runner export directly since spawning a subprocess adds nothing.
   const agentHome = makeAgentHome("codex-xrunner-cli-route-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   seedMessages(agentHome, [eligible("msg_cli_route")]);
   const capturedIds = [];
@@ -288,6 +302,40 @@ test("--agent codex routes to codex runner (exchange-runner CLI case)", async ()
   assert.equal(result.agent, "codex");
   assert.equal(result.reason, "replied");
   assert.deepEqual(capturedIds, ["msg_cli_route"]);
+});
+
+// round-4 (Codex finding #2): sender allowlist.
+test("codex runner ignores a message from an untrusted sender (§F2)", () => {
+  const agentHome = makeAgentHome("codex-xrunner-untrusted-");
+  enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  // 'opus' is NOT enabled here → not a trusted sender.
+  seedMessages(agentHome, [eligible("msg_mallory", { from: "mallory" })]);
+  assert.equal(pickEligibleCodexMessage(agentHome), null, "untrusted sender must not be picked");
+
+  // Once opus is an enabled exchange agent, its message IS eligible; the
+  // untrusted one still is not.
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  seedMessages(agentHome, [
+    eligible("msg_mallory", { from: "mallory", createdAt: "2026-01-01T00:00:00Z" }),
+    eligible("msg_opus", { from: "opus", createdAt: "2026-01-02T00:00:00Z" }),
+  ]);
+  assert.equal(pickEligibleCodexMessage(agentHome)?.id, "msg_opus");
+});
+
+// round-4 (Codex finding #3): the policy timeout actually reaches codex exec.
+test("realCodexRunner threads timeoutMs to codex exec, defaulting to 120s (§F3)", async () => {
+  let capturedTimeout = null;
+  const execImpl = (_file, _args, opts, cb) => {
+    capturedTimeout = opts.timeout;
+    cb(null, "done", "");
+    return { stdin: { on() {}, write() {}, end() {} } };
+  };
+
+  await realCodexRunner({ prompt: "hello", execFileImpl: execImpl, timeoutMs: 5000 });
+  assert.equal(capturedTimeout, 5000, "explicit timeoutMs must reach the exec options");
+
+  await realCodexRunner({ prompt: "hello", execFileImpl: execImpl });
+  assert.equal(capturedTimeout, 120000, "default must be the 120s constant");
 });
 
 test("buildCodexPrompt contains message id and never raw message text", () => {
@@ -305,6 +353,7 @@ test("buildCodexPrompt contains message id and never raw message text", () => {
 test("codex runner uses codex_runner_model from policy (not exchange_runner_model)", async () => {
   const agentHome = makeAgentHome("codex-xrunner-model-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   // Set codex_runner_model to a non-empty value; it gets passed through to the runner.
   // We verify the dispatch row records the model name.
@@ -323,6 +372,7 @@ test("codex runner uses codex_runner_model from policy (not exchange_runner_mode
 test("codex runner prompt never contains raw message text", async () => {
   const agentHome = makeAgentHome("codex-xrunner-noleak-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
   const SECRET_TEXT = "CODEX_REVIEW_BODY_MUST_NOT_APPEAR_IN_PROMPT_99";
   seedMessages(agentHome, [eligible("msg_noleak", { text: SECRET_TEXT })]);

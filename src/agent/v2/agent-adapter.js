@@ -132,6 +132,12 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl, onSpawn }) {
   return new Promise((resolve) => {
     let settled = false;
     let killTimer = null;
+    // When we initiate a termination (timeout/abort), that path owns the final
+    // settle — AFTER terminateGroup confirms the whole group is gone. The exec
+    // callback fires as soon as the DIRECT child dies from SIGTERM, so it must
+    // NOT settle first, or it would report timed_out/cancelled while a
+    // grandchild is still alive (the residual race from the prior round).
+    let terminating = false;
 
     function settle(value) {
       if (settled) return;
@@ -149,6 +155,7 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl, onSpawn }) {
       maxBuffer: 8 * 1024 * 1024,
       detached: true,
     }, (error, stdout, stderr) => {
+      if (terminating) return; // termination path settles after confirm-gone
       const parsed = parseClaudeOutput(stdout);
       const timedOut = Boolean(error && (error.killed || error.signal === "SIGTERM" || error.code === "ETIMEDOUT"));
       const resumeFailure = !timedOut && error && isResumeFailure(`${error.message || ""} ${stderr || ""}`);
@@ -175,20 +182,28 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl, onSpawn }) {
     // event loop alive for timeoutMs.
     if (!settled && timeoutMs > 0 && child?.pid) {
       const pid = child.pid;
-      killTimer = setTimeout(async () => {
+      killTimer = setTimeout(() => {
         killTimer = null;
-        await terminateGroup(pid); // SIGTERM → grace → SIGKILL → confirm gone
-        settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
+        terminating = true;
+        terminateGroup(pid).then(() => {
+          settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
+        });
       }, timeoutMs);
     }
 
     // Handle signal-based cancellation (kill switch / /stop). Confirm the group
     // is gone before reporting cancelled (§15.B/C).
     if (signal) {
-      signal.addEventListener("abort", async () => {
-        if (settled) return;
-        if (child?.pid) await terminateGroup(child.pid);
-        settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+      signal.addEventListener("abort", () => {
+        if (settled || terminating) return;
+        if (child?.pid) {
+          terminating = true;
+          terminateGroup(child.pid).then(() => {
+            settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+          });
+        } else {
+          settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+        }
       }, { once: true });
     }
 
@@ -272,6 +287,9 @@ function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl, on
   return new Promise((resolve) => {
     let settled = false;
     let killTimer = null;
+    // See spawnClaude: the termination path owns the final settle after the
+    // group is confirmed gone; the exec callback must not settle first.
+    let terminating = false;
     const jsonLines = [];
 
     function settle(value) {
@@ -288,6 +306,7 @@ function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl, on
       maxBuffer: 16 * 1024 * 1024,
       detached: true,
     }, (error, stdout, stderr) => {
+      if (terminating) return; // termination path settles after confirm-gone
       const stdoutBuf = String(stdout || "");
       const stderrBuf = String(stderr || "");
 
@@ -323,19 +342,27 @@ function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl, on
     // event loop alive for timeoutMs.
     if (!settled && timeoutMs > 0 && child?.pid) {
       const pid = child.pid;
-      killTimer = setTimeout(async () => {
+      killTimer = setTimeout(() => {
         killTimer = null;
-        await terminateGroup(pid); // SIGTERM → grace → SIGKILL → confirm gone
-        settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
+        terminating = true;
+        terminateGroup(pid).then(() => {
+          settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
+        });
       }, timeoutMs);
     }
 
     // Confirm the group is gone before reporting cancelled (§15.B/C).
     if (signal) {
-      signal.addEventListener("abort", async () => {
-        if (settled) return;
-        if (child?.pid) await terminateGroup(child.pid);
-        settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+      signal.addEventListener("abort", () => {
+        if (settled || terminating) return;
+        if (child?.pid) {
+          terminating = true;
+          terminateGroup(child.pid).then(() => {
+            settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+          });
+        } else {
+          settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+        }
       }, { once: true });
     }
 
