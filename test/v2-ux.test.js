@@ -256,8 +256,8 @@ test("poller: handleV2Message returns resolver error for non-existent repo", asy
   assert.equal(result.outcome, "resolver_error");
 });
 
-test("poller: handleV2Stop reports no active turns when none running", () => {
+test("poller: handleV2Stop reports no active turns when none running", async () => {
   // stopAllTurns clears all active turns — safe to call in any order.
-  const result = handleV2Stop();
+  const result = await handleV2Stop();
   assert.ok(typeof result.reply === "string");
 });

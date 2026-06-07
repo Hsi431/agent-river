@@ -6,7 +6,7 @@ import { parseV2Message } from "./router.js";
 import { resolveRepo, revalidateRepo } from "./repo-resolver.js";
 import { runTurnWithSession, clearSessionId, listSessions, getSessionId } from "./session.js";
 import { makeClaudeAdapter, makeCodexAdapter } from "./agent-adapter.js";
-import { makeTurnController, registerActiveTurn, unregisterActiveTurn, stopAllTurns, appendV2Run, listActiveTurns } from "./kill.js";
+import { makeTurnController, registerActiveTurn, unregisterActiveTurn, stopAllTurns, appendV2Run, listActiveTurns, findActiveTurnByKey } from "./kill.js";
 import { buildStartAck, buildStatusReport, outcomeMessage, resolverErrorMessage, routerErrorMessage } from "./ux.js";
 import { checkSafety, getTelegramCodexPolicy } from "../safety.js";
 import { agentPaths } from "../paths.js";
@@ -180,11 +180,22 @@ export async function handleV2Message({
     };
   }
 
+  // §15.A/§5: one active turn per session key. Refuse a second same-key turn
+  // rather than racing the first turn's session id / outbox.
+  const keyDims = { ownerUserId, chatId, agent, repoToplevel, mode };
+  if (findActiveTurnByKey(keyDims)) {
+    return {
+      handled: true,
+      reply: `⏳ A turn is already running for ${agent} · ${repoToplevel} · ${mode}. Wait for it to finish or send /stop.`,
+      turnId: null,
+      outcome: "busy",
+    };
+  }
+
   // Register the turn immediately (PID updated via onSpawn callback once child starts).
-  registerActiveTurn(turnId, { controller, pid: null, chatId, repoToplevel });
+  registerActiveTurn(turnId, { controller, pid: null, chatId, repoToplevel, keyDims });
 
   // Build ack message (shown immediately before background turn starts).
-  const keyDims = { ownerUserId, chatId, agent, repoToplevel, mode };
   const existingSessionId = getSessionId(agentHome, keyDims);
   const ackMessage = buildStartAck({ agent, repoToplevel, mode, sessionId: existingSessionId, turnId });
 
@@ -223,7 +234,7 @@ export async function handleV2Message({
         now,
         // §15.B: report PID to registry as soon as the child spawns.
         onSpawn: (pid) => {
-          const entry = { controller, pid, chatId, repoToplevel };
+          const entry = { controller, pid, chatId, repoToplevel, keyDims };
           registerActiveTurn(turnId, entry);
         },
       });
@@ -300,8 +311,8 @@ function defaultBackground(fn) {
 
 // ─── /stop command handler ────────────────────────────────────────────────────
 
-export function handleV2Stop() {
-  const stopped = stopAllTurns();
+export async function handleV2Stop() {
+  const stopped = await stopAllTurns();
   if (stopped.length === 0) {
     return { reply: "No active v2 turns to stop." };
   }

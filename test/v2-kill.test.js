@@ -36,12 +36,12 @@ test("kill: registerActiveTurn / listActiveTurns / unregisterActiveTurn", () => 
   assert.equal(after, undefined, "turn should be removed");
 });
 
-test("kill: stopTurn aborts the controller signal", () => {
+test("kill: stopTurn aborts the controller signal", async () => {
   const { signal, controller } = makeTurnController();
   registerActiveTurn("turn_ab", { controller, pid: null, chatId: "c1", repoToplevel: "/ws/p" });
 
   assert.equal(signal.aborted, false);
-  stopTurn("turn_ab");
+  await stopTurn("turn_ab");
   assert.equal(signal.aborted, true);
 
   // After stop, the turn should no longer be in the registry.
@@ -49,19 +49,19 @@ test("kill: stopTurn aborts the controller signal", () => {
   assert.equal(found, undefined);
 });
 
-test("kill: stopTurn returns turn_not_found for unknown id", () => {
-  const result = stopTurn("nonexistent_turn");
+test("kill: stopTurn returns turn_not_found for unknown id", async () => {
+  const result = await stopTurn("nonexistent_turn");
   assert.equal(result.ok, false);
   assert.equal(result.reason, "turn_not_found");
 });
 
-test("kill: stopAllTurns cancels all active turns", () => {
+test("kill: stopAllTurns cancels all active turns", async () => {
   const { signal: s1, controller: c1 } = makeTurnController();
   const { signal: s2, controller: c2 } = makeTurnController();
   registerActiveTurn("turn_all_1", { controller: c1, pid: null, chatId: "c1", repoToplevel: "/ws/p1" });
   registerActiveTurn("turn_all_2", { controller: c2, pid: null, chatId: "c2", repoToplevel: "/ws/p2" });
 
-  const stopped = stopAllTurns();
+  const stopped = await stopAllTurns();
   assert.ok(stopped.includes("turn_all_1"));
   assert.ok(stopped.includes("turn_all_2"));
   assert.equal(s1.aborted, true);
@@ -145,7 +145,7 @@ test("kill: v2 turn records cancelled status when stopped", async () => {
 
   // Run the adapter and abort it.
   const runPromise = adapter.run({ signal });
-  stopTurn("turn_record_1");
+  await stopTurn("turn_record_1");
   const result = await runPromise;
 
   // Record the cancellation.

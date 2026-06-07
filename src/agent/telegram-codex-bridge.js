@@ -3,6 +3,7 @@ import path from "node:path";
 import { agentPaths } from "./paths.js";
 import { getSafetyStatus, getTelegramCodexPolicy } from "./safety.js";
 import { telegramCodexOnce } from "./telegram-codex.js";
+import { acquirePollerLock, releasePollerLock } from "./telegram.js";
 
 // R1: local, foreground, long-poll Telegram <-> Codex bridge. It is ONLY a
 // scheduler: each cycle it calls the existing single-shot telegramCodexOnce
@@ -63,6 +64,9 @@ export async function telegramCodexBridge({
   const runOnce = onceImpl || telegramCodexOnce;
   const sleep = sleepImpl || defaultSleep;
   const startedAtMs = now();
+
+  // §15.H: only one poller process may own getUpdates. Refuse to start a second.
+  acquirePollerLock(agentHome);
 
   writeBridgeStatus(agentHome, {
     running: true,
@@ -137,6 +141,7 @@ export async function telegramCodexBridge({
       });
     }
   } finally {
+    releasePollerLock(agentHome);
     writeBridgeStatus(agentHome, {
       running: false,
       last_stopped_at: iso(now()),

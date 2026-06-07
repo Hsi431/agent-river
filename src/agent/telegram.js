@@ -103,7 +103,7 @@ async function maybeHandleV2({ agentHome, message, execFileImpl }) {
   const text = String(message.text || "").trim();
 
   if (text === "/stop") {
-    return v2Payload(message, handleV2Stop().reply);
+    return v2Payload(message, (await handleV2Stop()).reply);
   }
   if (text === "/status" || text === "/context") {
     return v2Payload(message, handleV2Status(agentHome, { ownerUserId, chatId }).reply);
@@ -206,7 +206,7 @@ export function releasePollerLock(agentHome) {
 async function sendPendingV2Outbox({ agentHome, token, request, fetchImpl }) {
   // §15.B: each poll cycle, if kill switch is on, stop all running turns.
   if (agentHome && !checkSafety(agentHome).ok) {
-    stopAllTurns();
+    await stopAllTurns();
   }
 
   const sent = [];

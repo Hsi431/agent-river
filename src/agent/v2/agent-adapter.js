@@ -4,9 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { scanSecrets } from "../../lib/secret-scan.js";
 import { getTelegramCodexPolicy } from "../safety.js";
-
-// Grace period between SIGTERM and SIGKILL for the process group timeout (§15.C).
-const KILL_GRACE_MS = 5000;
+import { terminateGroup } from "./kill.js";
 
 // Thin AgentAdapter interface (§4).
 //
@@ -142,12 +140,6 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl, onSpawn }) {
       resolve(value);
     }
 
-    function killGroup(pid, sig) {
-      try { process.kill(-pid, sig); } catch {
-        try { process.kill(pid, sig); } catch { /* best-effort */ }
-      }
-    }
-
     // Do NOT pass execFile's built-in timeout (§15.C): with detached=true it
     // kills only the direct child and leaves grandchildren running. Use a manual
     // timer instead (SIGTERM → grace → SIGKILL → confirm gone → timed_out).
@@ -183,26 +175,20 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl, onSpawn }) {
     // event loop alive for timeoutMs.
     if (!settled && timeoutMs > 0 && child?.pid) {
       const pid = child.pid;
-      killTimer = setTimeout(() => {
+      killTimer = setTimeout(async () => {
         killTimer = null;
-        killGroup(pid, "SIGTERM");
-        setTimeout(() => {
-          killGroup(pid, "SIGKILL");
-          settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
-        }, KILL_GRACE_MS);
+        await terminateGroup(pid); // SIGTERM → grace → SIGKILL → confirm gone
+        settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
       }, timeoutMs);
     }
 
-    // Handle signal-based cancellation (kill switch / /stop).
+    // Handle signal-based cancellation (kill switch / /stop). Confirm the group
+    // is gone before reporting cancelled (§15.B/C).
     if (signal) {
-      signal.addEventListener("abort", () => {
-        if (!settled) {
-          if (child?.pid) {
-            killGroup(child.pid, "SIGTERM");
-            setTimeout(() => killGroup(child.pid, "SIGKILL"), KILL_GRACE_MS);
-          }
-          settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
-        }
+      signal.addEventListener("abort", async () => {
+        if (settled) return;
+        if (child?.pid) await terminateGroup(child.pid);
+        settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
       }, { once: true });
     }
 
@@ -295,12 +281,6 @@ function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl, on
       resolve(value);
     }
 
-    function killGroup(pid, sig) {
-      try { process.kill(-pid, sig); } catch {
-        try { process.kill(pid, sig); } catch { /* best-effort */ }
-      }
-    }
-
     // Do NOT pass execFile's built-in timeout (§15.C): with detached=true it
     // kills only the direct child and leaves grandchildren running.
     const child = execFileImpl("codex", args, {
@@ -343,25 +323,19 @@ function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl, on
     // event loop alive for timeoutMs.
     if (!settled && timeoutMs > 0 && child?.pid) {
       const pid = child.pid;
-      killTimer = setTimeout(() => {
+      killTimer = setTimeout(async () => {
         killTimer = null;
-        killGroup(pid, "SIGTERM");
-        setTimeout(() => {
-          killGroup(pid, "SIGKILL");
-          settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
-        }, KILL_GRACE_MS);
+        await terminateGroup(pid); // SIGTERM → grace → SIGKILL → confirm gone
+        settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
       }, timeoutMs);
     }
 
+    // Confirm the group is gone before reporting cancelled (§15.B/C).
     if (signal) {
-      signal.addEventListener("abort", () => {
-        if (!settled) {
-          if (child?.pid) {
-            killGroup(child.pid, "SIGTERM");
-            setTimeout(() => killGroup(child.pid, "SIGKILL"), KILL_GRACE_MS);
-          }
-          settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
-        }
+      signal.addEventListener("abort", async () => {
+        if (settled) return;
+        if (child?.pid) await terminateGroup(child.pid);
+        settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
       }, { once: true });
     }
 
