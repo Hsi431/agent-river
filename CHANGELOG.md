@@ -4,6 +4,54 @@ All notable changes to Agent River will be documented in this file.
 
 ## Unreleased
 
+### v2 Phase 1 (branch: v2-phase1)
+
+#### Added
+- **Repo resolver** (`src/agent/v2/repo-resolver.js`): canonical git top-level
+  identity, workspace-root containment check, and a specific error taxonomy
+  (`missing_workspace_root`, `invalid_input`, `repo_not_found`,
+  `repo_access_denied`, `repo_outside_workspace`). Accepts only `repo=<name>`
+  and `repo=/abs/path` forms; no NL or recursive search.
+- **Deterministic router** (`src/agent/v2/router.js`): parses `@<agent>
+  [repo=...] [mode=...] [--] <free text>`. Only leading control tokens are
+  parsed; later `mode=/repo=` in prose are part of the prompt. Unknown/duplicate
+  control tokens, forbidden modes (`danger-full-access`, `bypassPermissions`,
+  etc.), and `mode=write` without `repo=` are errors surfaced to the owner.
+- **Thin AgentAdapter interface + Claude/Codex adapters**
+  (`src/agent/v2/agent-adapter.js`): `run({ repoToplevel, mode, prompt,
+  sessionId, model, signal, execFileImpl }) → { ok, text, sessionId, tokens,
+  outcome }`. All spawns use `execFile` (no shell). Adapters are injectable for
+  tests; no real `claude`/`codex` binary is required by tests.
+- **5-dim session model** (`src/agent/v2/session.js`): key =
+  `(ownerUserId, chatId, agent, repoToplevel, mode)` stored as a SHA-256 hash
+  with raw fields for audit. Contracts: session_id updated only on success;
+  stale-session retry once (read turns only); write + uncertain outcome = no
+  auto-rerun; schema_version=2 on all records.
+- **Kill switch / /stop** (`src/agent/v2/kill.js`): in-process active-turn
+  registry, AbortController-based cancellation, process-group SIGTERM, v2 run
+  records with `cancelled`/`timed_out` status. `stopAllTurns()` called on
+  kill-switch-on.
+- **Ack/status UX** (`src/agent/v2/ux.js`): every start ack shows
+  `agent · repo · mode · session`; `/status` reports without calling a model;
+  `repo_unavailable` if active repo has moved/been deleted; failure-reason
+  messages for all outcome codes and resolver/router errors.
+- **v1/v2 single-poller routing** (`src/agent/v2/poller.js`): `@agent ...`
+  messages route to v2; everything else stays on v1. Versioned callbacks:
+  `v2:turn:<id>:<action>` namespace; `parseV2Callback`, `isV1Callback`,
+  `makeV2CallbackData`. `schema_version` on v2 run records.
+- Tests: 67 new tests covering all spec §13 acceptance criteria (§13.1–9). All
+  tests are injectable (no real `codex`/`claude` binary required).
+
+#### Security
+- Updated `SECURITY.md` with v2 local-parity trust model, explicit residual
+  risks, capability ceiling (no `danger-full-access`/`bypass` from Telegram),
+  and acknowledgement of deferred Phase 2 hardening (OS sandbox,
+  per-action approval, project-settings isolation).
+
+#### Coexistence
+- v1 classifier / task planner / repo allowlist are unchanged. v2 is a new code
+  path added alongside v1, not replacing it.
+
 ## v0.1.1 — 2026-06-06
 
 ### Changed
