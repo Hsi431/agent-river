@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import { listActiveTurns } from "./kill.js";
-import { getSessionRecord } from "./session.js";
+import { getSessionRecord, listSessions } from "./session.js";
 
 // ─── Start ack ───────────────────────────────────────────────────────────────
 
@@ -22,12 +22,23 @@ export function buildStartAck({ agent, repoToplevel, mode, sessionId, turnId }) 
 
 // ─── /status ─────────────────────────────────────────────────────────────────
 
-// Build the /status reply for the given (ownerUserId, chatId, agent) context.
-// Does NOT call any model. If the active repo no longer exists → repo_unavailable.
+// Build the /status reply for the given (ownerUserId, chatId) context.
+// §15.I: lists all sessions for (owner, chat) from the session store, plus
+// any active turns. Does NOT call any model.
 export function buildStatusReport(agentHome, { ownerUserId, chatId, agent, repoToplevel, mode }) {
+  // Specific session (if full key provided).
   const session = repoToplevel && agent
     ? getSessionRecord(agentHome, { ownerUserId, chatId, agent, repoToplevel, mode: mode || "read" })
     : null;
+
+  // §15.I: all sessions for this (owner, chat).
+  const allSessions = agentHome
+    ? listSessions(agentHome).filter(
+        (s) =>
+          String(s.owner_user_id || "") === String(ownerUserId || "") &&
+          String(s.chat_id || "") === String(chatId || ""),
+      )
+    : [];
 
   const repoStatus = repoToplevel ? checkRepo(repoToplevel) : "no_active_repo";
   const activeTurns = listActiveTurns().filter(
@@ -45,6 +56,12 @@ export function buildStatusReport(agentHome, { ownerUserId, chatId, agent, repoT
   if (mode) lines.push(`mode: ${mode}`);
   if (session) {
     lines.push(`session: ${shortId(session.session_id)} (updated ${session.updated_at})`);
+  } else if (allSessions.length > 0) {
+    // Show all sessions for this (owner, chat).
+    lines.push(`sessions (${allSessions.length}):`);
+    for (const s of allSessions) {
+      lines.push(`  ${s.agent}/${s.mode} @ ${s.repo_toplevel}: ${shortId(s.session_id)}`);
+    }
   } else {
     lines.push("session: none");
   }

@@ -5,6 +5,9 @@ import { execFile } from "node:child_process";
 import { scanSecrets } from "../../lib/secret-scan.js";
 import { getTelegramCodexPolicy } from "../safety.js";
 
+// Grace period between SIGTERM and SIGKILL for the process group timeout (§15.C).
+const KILL_GRACE_MS = 5000;
+
 // Thin AgentAdapter interface (§4).
 //
 // AgentAdapter.run({ repoToplevel, mode, prompt, sessionId, model, signal, execFileImpl })
@@ -36,7 +39,7 @@ export function makeClaudeAdapter({
 } = {}) {
   return {
     name: "claude",
-    async run({ repoToplevel, mode, prompt, sessionId, model, signal, execFileImpl = execFile }) {
+    async run({ repoToplevel, mode, prompt, sessionId, model, signal, execFileImpl = execFile, onSpawn }) {
       const promptText = String(prompt || "");
       if (!promptText.trim()) {
         return failOutcome("spawn_error", null, 0, "Empty prompt");
@@ -51,11 +54,12 @@ export function makeClaudeAdapter({
       }
 
       const settingsPath = mode === "write" ? writeSettingsPath : readSettingsPath;
-      // Fail-closed: if the settings file is missing, refuse to spawn an
-      // unsandboxed Claude. This matches the exchange-runner behaviour.
-      if (settingsPath && !fs.existsSync(settingsPath)) {
-        // Allow tests that pass execFileImpl without needing real settings files.
-        // In production, the settings path must exist.
+      // Fail-closed (§15.F): if the required settings profile is missing, refuse
+      // to spawn Claude with provider defaults. Tests pass execFileImpl to bypass
+      // the binary entirely, so this check must fire only when execFileImpl is the
+      // real execFile AND the path is missing.
+      if (settingsPath && execFileImpl === execFile && !fs.existsSync(settingsPath)) {
+        return failOutcome("capability_blocked", null, 0, `Settings profile missing: ${settingsPath}`);
       }
 
       const policy = agentHome ? getTelegramCodexPolicy(agentHome) : {};
@@ -83,6 +87,7 @@ export function makeClaudeAdapter({
         timeoutMs,
         signal,
         execFileImpl,
+        onSpawn,
       });
 
       return interpretClaudeResult(result, sessionId);
@@ -125,24 +130,37 @@ function interpretClaudeResult(result, priorSessionId) {
   };
 }
 
-function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl }) {
+function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl, onSpawn }) {
   return new Promise((resolve) => {
     let settled = false;
+    let killTimer = null;
+
+    function settle(value) {
+      if (settled) return;
+      settled = true;
+      if (killTimer) { clearTimeout(killTimer); killTimer = null; }
+      resolve(value);
+    }
+
+    function killGroup(pid, sig) {
+      try { process.kill(-pid, sig); } catch {
+        try { process.kill(pid, sig); } catch { /* best-effort */ }
+      }
+    }
+
+    // Do NOT pass execFile's built-in timeout (§15.C): with detached=true it
+    // kills only the direct child and leaves grandchildren running. Use a manual
+    // timer instead (SIGTERM → grace → SIGKILL → confirm gone → timed_out).
     const child = execFileImpl("claude", args, {
       cwd,
       env: spawnEnvWithLocalBin(),
-      timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
-      // Own process group so abort/kill-switch can SIGTERM the whole group
-      // (process.kill(-pid)), not just the direct child (§12.2).
       detached: true,
     }, (error, stdout, stderr) => {
-      if (settled) return;
-      settled = true;
       const parsed = parseClaudeOutput(stdout);
       const timedOut = Boolean(error && (error.killed || error.signal === "SIGTERM" || error.code === "ETIMEDOUT"));
       const resumeFailure = !timedOut && error && isResumeFailure(`${error.message || ""} ${stderr || ""}`);
-      resolve({
+      settle({
         ok: !error,
         timedOut,
         resumeFailure,
@@ -154,20 +172,36 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl }) {
       });
     });
 
+    // Report PID immediately via onSpawn hook so registry gets the real PID (§15.B).
+    if (child?.pid && onSpawn) {
+      onSpawn(child.pid);
+    }
+
+    // Manual process-group timeout (§15.C). Skip if the exec callback already
+    // settled synchronously (e.g. injected execFileImpl in tests) — otherwise the
+    // timer is installed after settle() ran and never gets cleared, keeping the
+    // event loop alive for timeoutMs.
+    if (!settled && timeoutMs > 0 && child?.pid) {
+      const pid = child.pid;
+      killTimer = setTimeout(() => {
+        killTimer = null;
+        killGroup(pid, "SIGTERM");
+        setTimeout(() => {
+          killGroup(pid, "SIGKILL");
+          settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
+        }, KILL_GRACE_MS);
+      }, timeoutMs);
+    }
+
     // Handle signal-based cancellation (kill switch / /stop).
     if (signal) {
       signal.addEventListener("abort", () => {
         if (!settled) {
-          settled = true;
-          // Kill the child's process group.
           if (child?.pid) {
-            try {
-              process.kill(-child.pid, "SIGTERM");
-            } catch {
-              try { child.kill("SIGTERM"); } catch { /* best-effort */ }
-            }
+            killGroup(child.pid, "SIGTERM");
+            setTimeout(() => killGroup(child.pid, "SIGKILL"), KILL_GRACE_MS);
           }
-          resolve({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+          settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
         }
       }, { once: true });
     }
@@ -182,7 +216,7 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl }) {
 export function makeCodexAdapter({ agentHome, timeoutMs = ADAPTER_TIMEOUT_MS } = {}) {
   return {
     name: "codex",
-    async run({ repoToplevel, mode, prompt, sessionId, model, signal, execFileImpl = execFile }) {
+    async run({ repoToplevel, mode, prompt, sessionId, model, signal, execFileImpl = execFile, onSpawn }) {
       const promptText = String(prompt || "");
       if (!promptText.trim()) {
         return failOutcome("spawn_error", null, 0, "Empty prompt");
@@ -205,13 +239,16 @@ export function makeCodexAdapter({ agentHome, timeoutMs = ADAPTER_TIMEOUT_MS } =
         ? buildCodexResumeArgs({ sessionId, sandbox, repoToplevel, model: effectiveModel })
         : buildCodexExecArgs({ sandbox, repoToplevel, model: effectiveModel });
 
+      // §15.E: resume ALWAYS sends the new prompt via stdin (same as a fresh turn).
+      // Never null the prompt on resume.
       const result = await spawnCodex({
         args,
         cwd: repoToplevel,
-        promptText: sessionId ? null : promptText, // resume sends no stdin
+        promptText,
         timeoutMs,
         signal,
         execFileImpl,
+        onSpawn,
       });
 
       return interpretCodexResult(result, sessionId, promptText, mode);
@@ -245,76 +282,94 @@ function buildCodexResumeArgs({ sessionId, sandbox, repoToplevel, model }) {
   return args;
 }
 
-function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl }) {
+function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl, onSpawn }) {
   return new Promise((resolve) => {
     let settled = false;
+    let killTimer = null;
     const jsonLines = [];
-    let stdoutBuf = "";
-    let stderrBuf = "";
 
-    const child = execFileImpl("codex", args, {
-      cwd,
-      timeout: timeoutMs,
-      maxBuffer: 16 * 1024 * 1024,
-      // Own process group so abort/kill-switch can SIGTERM the whole group
-      // (process.kill(-pid)), not just the direct child (§12.2).
-      detached: true,
-    }, (error, stdout, stderr) => {
+    function settle(value) {
       if (settled) return;
       settled = true;
-      stdoutBuf = String(stdout || "");
-      stderrBuf = String(stderr || "");
+      if (killTimer) { clearTimeout(killTimer); killTimer = null; }
+      resolve(value);
+    }
 
-      // Parse JSON events from stdout.
+    function killGroup(pid, sig) {
+      try { process.kill(-pid, sig); } catch {
+        try { process.kill(pid, sig); } catch { /* best-effort */ }
+      }
+    }
+
+    // Do NOT pass execFile's built-in timeout (§15.C): with detached=true it
+    // kills only the direct child and leaves grandchildren running.
+    const child = execFileImpl("codex", args, {
+      cwd,
+      maxBuffer: 16 * 1024 * 1024,
+      detached: true,
+    }, (error, stdout, stderr) => {
+      const stdoutBuf = String(stdout || "");
+      const stderrBuf = String(stderr || "");
+
+      // Parse JSON events from stdout (§15.D).
       for (const line of stdoutBuf.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        try {
-          jsonLines.push(JSON.parse(trimmed));
-        } catch { /* not a JSON line */ }
+        try { jsonLines.push(JSON.parse(trimmed)); } catch { /* not a JSON line */ }
       }
 
       const timedOut = Boolean(error && (error.killed || error.signal === "SIGTERM" || error.code === "ETIMEDOUT"));
       const resumeFailure = !timedOut && error && isResumeFailure(`${error.message || ""} ${stderrBuf}`);
-      const sessionIdFromEvents = extractCodexSessionId(jsonLines);
-      const textFromEvents = extractCodexFinalText(jsonLines);
-      const tokensFromEvents = extractCodexTokens(jsonLines, stdoutBuf, stderrBuf);
 
-      resolve({
+      settle({
         ok: !error,
         timedOut,
         resumeFailure,
-        text: textFromEvents,
-        sessionId: sessionIdFromEvents,
-        tokens: tokensFromEvents,
+        text: extractCodexFinalText(jsonLines),
+        sessionId: extractCodexSessionId(jsonLines),
+        tokens: extractCodexTokens(jsonLines),
         error: error ? sanitize(error.message) : null,
         stderr: error ? sanitize(stderrBuf).slice(0, 300) : null,
       });
     });
 
+    // Report PID immediately via onSpawn hook so registry gets the real PID (§15.B).
+    if (child?.pid && onSpawn) {
+      onSpawn(child.pid);
+    }
+
+    // Manual process-group timeout (§15.C). Skip if already settled synchronously
+    // (injected execFileImpl in tests) so the timer can't linger and keep the
+    // event loop alive for timeoutMs.
+    if (!settled && timeoutMs > 0 && child?.pid) {
+      const pid = child.pid;
+      killTimer = setTimeout(() => {
+        killTimer = null;
+        killGroup(pid, "SIGTERM");
+        setTimeout(() => {
+          killGroup(pid, "SIGKILL");
+          settle({ ok: false, timedOut: true, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "timed_out", stderr: null });
+        }, KILL_GRACE_MS);
+      }, timeoutMs);
+    }
+
     if (signal) {
       signal.addEventListener("abort", () => {
         if (!settled) {
-          settled = true;
           if (child?.pid) {
-            try {
-              process.kill(-child.pid, "SIGTERM");
-            } catch {
-              try { child.kill("SIGTERM"); } catch { /* best-effort */ }
-            }
+            killGroup(child.pid, "SIGTERM");
+            setTimeout(() => killGroup(child.pid, "SIGKILL"), KILL_GRACE_MS);
           }
-          resolve({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
+          settle({ ok: false, timedOut: false, resumeFailure: false, text: "", sessionId: null, tokens: 0, error: "cancelled", stderr: null });
         }
       }, { once: true });
     }
 
     child?.stdin?.on?.("error", () => {});
-    // Send prompt via stdin (new session); resume sends no stdin.
-    if (promptText !== null) {
-      try {
-        child?.stdin?.write?.(`${promptText}\n`);
-      } catch { /* spawn may have failed */ }
-    }
+    // §15.E: Always send the prompt via stdin — on fresh sessions AND on resume.
+    try {
+      child?.stdin?.write?.(`${promptText}\n`);
+    } catch { /* spawn may have failed */ }
     child?.stdin?.end?.();
   });
 }
@@ -383,39 +438,57 @@ function parseClaudeOutput(stdout) {
   }
 }
 
+// ─── Codex --json event extractors (real format per §15.D) ───────────────────
+//
+// Real event shapes (from `codex exec --json`):
+//   session/thread start: { "type": "thread.created" | "session.created", "id": "..." }
+//                      or: { "type": "...", "thread_id": "..." } / { "session_id": "..." }
+//   final text:  { "type": "item.completed", "item": { "type": "agent_message", "text": "..." } }
+//   tokens:      { "type": "turn.completed", "usage": { "input_tokens": N, "output_tokens": N } }
+//
+// Concatenate all agent_message texts; sum input+output from turn.completed.
+
 function extractCodexSessionId(events) {
-  // Look for an event with session_id or thread_id field.
   for (const ev of events) {
-    if (typeof ev?.session_id === "string" && ev.session_id) return ev.session_id;
+    // Direct id field on session/thread creation events.
+    if (
+      (ev?.type === "thread.created" || ev?.type === "session.created") &&
+      typeof ev?.id === "string" && ev.id
+    ) {
+      return ev.id;
+    }
+    // Fallback: thread_id or session_id on any event.
     if (typeof ev?.thread_id === "string" && ev.thread_id) return ev.thread_id;
+    if (typeof ev?.session_id === "string" && ev.session_id) return ev.session_id;
   }
   return null;
 }
 
 function extractCodexFinalText(events) {
-  // Last "content" or "message" event, or last event with a text field.
-  let text = "";
+  // Concatenate all agent_message texts from item.completed events (§15.D).
+  const parts = [];
   for (const ev of events) {
-    if (typeof ev?.content === "string") text = ev.content;
-    else if (typeof ev?.message === "string") text = ev.message;
-    else if (typeof ev?.text === "string") text = ev.text;
-    else if (typeof ev?.result === "string") text = ev.result;
+    if (
+      ev?.type === "item.completed" &&
+      ev?.item?.type === "agent_message" &&
+      typeof ev.item.text === "string"
+    ) {
+      parts.push(ev.item.text);
+    }
   }
-  return text.trim();
+  if (parts.length > 0) return parts.join("").trim();
+  return "";
 }
 
-function extractCodexTokens(events, stdout, stderr) {
-  // Try events first, then fall back to the "tokens used\n1,234" line.
+function extractCodexTokens(events) {
+  // Sum input_tokens + output_tokens from turn.completed events (§15.D).
+  let total = 0;
   for (const ev of events) {
-    const t = Number(ev?.tokens_used || ev?.total_tokens || ev?.usage?.total_tokens);
-    if (Number.isFinite(t) && t > 0) return t;
+    if (ev?.type === "turn.completed" && ev?.usage) {
+      total += (Number(ev.usage.input_tokens) || 0) + (Number(ev.usage.output_tokens) || 0);
+    }
   }
-  const match = /tokens used[^\d]*([\d,]+)/i.exec(`${stdout}\n${stderr}`);
-  if (match) {
-    const v = Number.parseInt(match[1].replace(/,/g, ""), 10);
-    if (Number.isFinite(v)) return v;
-  }
-  return 0;
+  return total;
 }
 
 function isResumeFailure(msg) {

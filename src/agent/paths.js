@@ -44,5 +44,7 @@ export function agentPaths(agentHome) {
     directSendAudit: path.join(agentHome, "direct-send-audit.jsonl"),
     ownerModeAudit: path.join(agentHome, "owner-mode-audit.jsonl"),
     bridgeStatus: path.join(agentHome, "telegram-codex-bridge-status.json"),
+    v2PollerLock: path.join(agentHome, "v2-poller.lock"),
+    v2Outbox: path.join(agentHome, "v2-outbox.jsonl"),
   };
 }

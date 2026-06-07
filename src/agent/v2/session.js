@@ -117,6 +117,7 @@ export async function runTurnWithSession({
   model,
   signal,
   adapter,
+  onSpawn, // §15.B: callback(pid) → void, called when child spawns
   now = Date.now(),
 }) {
   const keyDims = { ownerUserId, chatId, agent, repoToplevel, mode };
@@ -130,6 +131,7 @@ export async function runTurnWithSession({
     sessionId: storedSessionId,
     model,
     signal,
+    onSpawn,
   });
 
   const isResumeFailure = !result.ok && result.outcome === "spawn_error" && result.errorDetail === "resume_failure";
@@ -147,6 +149,7 @@ export async function runTurnWithSession({
       sessionId: null,
       model,
       signal,
+      onSpawn,
     });
   }
 

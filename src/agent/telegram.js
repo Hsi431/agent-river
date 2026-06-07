@@ -4,11 +4,12 @@ import { execFile } from "node:child_process";
 import { shortHash } from "../lib/hash.js";
 import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { scanSecrets, redactSecrets } from "../lib/secret-scan.js";
-import { routeUpdate, handleV2Message, handleV2Stop, handleV2Status } from "./v2/poller.js";
+import { routeUpdate, handleV2Message, handleV2Stop, handleV2Status, latestV2Outbox, markV2OutboxSent } from "./v2/poller.js";
 import { enqueueChatMessage, listPendingChatReplies, markChatReplySent } from "./chat.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { agentPaths } from "./paths.js";
-import { getSafetyStatus, getTelegramCodexPolicy, isExchangeAgentEnabled, setTelegramCodexPolicy } from "./safety.js";
+import { getSafetyStatus, checkSafety, getTelegramCodexPolicy, isExchangeAgentEnabled, setTelegramCodexPolicy } from "./safety.js";
+import { stopAllTurns } from "./v2/kill.js";
 import { isOwner, ownerTaskReplyMarkup } from "./owner-mode.js";
 import {
   approveDispatch,
@@ -87,8 +88,8 @@ export async function handleTelegramUpdate({ agentHome, update, memoryStateHome,
 
 // v2 intercept: opt-in (policy.v2_enabled), owner-only. Routes `/stop`, `/status`,
 // and `@agent ...` messages to the v2 path; returns null to fall through to v1.
-// The agent turn runs inline (single-flight, like v1 owner edits); ack + result
-// are returned as one redacted message.
+// §15.A: agent turns now run in the BACKGROUND; this function returns the start
+// ack immediately. Results arrive via the v2 outbox flushed by each poll cycle.
 async function maybeHandleV2({ agentHome, message, execFileImpl }) {
   const policy = getTelegramCodexPolicy(agentHome);
   if (!policy.v2_enabled) {
@@ -111,12 +112,14 @@ async function maybeHandleV2({ agentHome, message, execFileImpl }) {
     return null; // not a v2 @agent message; let v1 handle it.
   }
 
+  // §15.A: handleV2Message now returns immediately with the ack; the background
+  // turn runs independently and writes its result to the v2 outbox.
   const result = await handleV2Message({ agentHome, ownerUserId, chatId, text, execFileImpl });
   if (!result || !result.handled) {
     return null;
   }
-  const body = result.ack ? `${result.ack}\n\n${result.reply}` : result.reply;
-  return v2Payload(message, body, { v2: result });
+  // Return only the ack; the full result comes via the outbox.
+  return v2Payload(message, result.reply, { v2: result });
 }
 
 function v2Payload(message, text, extra = {}) {
@@ -134,6 +137,96 @@ export function parseTelegramUpdateJson(text) {
   } catch {
     throw new Error("Invalid Telegram update JSON");
   }
+}
+
+// ─── Poller lock (§15.H) ──────────────────────────────────────────────────────
+// Acquire a cross-process lockfile when the poll loop starts. A second poller
+// process refuses with a clear error.
+
+export function acquirePollerLock(agentHome) {
+  const lockPath = agentPaths(agentHome).v2PollerLock;
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const content = JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() });
+  // O_CREAT | O_EXCL: fails atomically if the file already exists.
+  try {
+    fs.writeFileSync(lockPath, content, { flag: "wx" });
+  } catch (err) {
+    if (err.code === "EEXIST") {
+      // Check if the owning process is still alive.
+      let existing = null;
+      try {
+        existing = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+      } catch {
+        // Corrupt lock file — overwrite.
+        fs.writeFileSync(lockPath, content);
+        return lockPath;
+      }
+
+      const lockPid = existing?.pid;
+      if (!lockPid) {
+        // No PID in lock — overwrite.
+        fs.writeFileSync(lockPath, content);
+        return lockPath;
+      }
+
+      // Check if the owning process is still alive (works for any PID including our own).
+      let alive = false;
+      try {
+        process.kill(lockPid, 0);
+        alive = true;
+      } catch (killErr) {
+        // ESRCH = process does not exist (stale lock). EPERM = exists but not our process.
+        alive = killErr.code === "EPERM";
+      }
+
+      if (alive) {
+        throw new Error(
+          `v2 poller already running (pid ${lockPid}). Stop the other bridge process before starting a new one.`
+        );
+      }
+
+      // Stale lock — reclaim.
+      fs.writeFileSync(lockPath, content);
+    } else {
+      throw err;
+    }
+  }
+  return lockPath;
+}
+
+export function releasePollerLock(agentHome) {
+  try {
+    fs.unlinkSync(agentPaths(agentHome).v2PollerLock);
+  } catch { /* best-effort */ }
+}
+
+// ─── v2 outbox flush (§15.A) ──────────────────────────────────────────────────
+// Flush any pending background turn results to Telegram each poll cycle.
+
+async function sendPendingV2Outbox({ agentHome, token, request, fetchImpl }) {
+  // §15.B: each poll cycle, if kill switch is on, stop all running turns.
+  if (agentHome && !checkSafety(agentHome).ok) {
+    stopAllTurns();
+  }
+
+  const sent = [];
+  for (const entry of latestV2Outbox(agentHome).filter((e) => e.status === "queued")) {
+    let send_error = null;
+    try {
+      await sendTelegramMessage({
+        token,
+        request,
+        fetchImpl,
+        chatId: entry.chat_id,
+        text: String(entry.text || ""),
+      });
+      markV2OutboxSent(agentHome, entry.id);
+    } catch (error) {
+      send_error = error.message;
+    }
+    sent.push({ id: entry.id, sent: !send_error, send_error });
+  }
+  return sent;
 }
 
 export async function pollTelegramOnce({
@@ -208,6 +301,8 @@ export async function pollTelegramOnce({
   const replies = await sendPendingTelegramReplies({ agentHome, token, request, fetchImpl });
   const exchangeNotifications = await sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl });
   const dispatchNotifications = await sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl });
+  // §15.A: flush v2 background turn results. Also sweeps kill switch (§15.B).
+  const v2OutboxResults = await sendPendingV2Outbox({ agentHome, token, request, fetchImpl });
 
   return {
     updates: updates.length,
@@ -216,6 +311,7 @@ export async function pollTelegramOnce({
     replies,
     exchange_notifications: exchangeNotifications,
     dispatch_notifications: dispatchNotifications,
+    v2_outbox: v2OutboxResults,
     next_offset: nextOffset,
   };
 }

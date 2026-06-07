@@ -191,6 +191,11 @@ test("poller: cross-repo read review runs in target repo top-level (mocked adapt
     },
   };
 
+  // §15.A: handleV2Message now runs the turn in the background. Use backgroundImpl
+  // to run synchronously so tests can inspect results without real async delays.
+  let backgroundFn = null;
+  const syncBackground = (fn) => { backgroundFn = fn; };
+
   const result = await handleV2Message({
     agentHome,
     ownerUserId: "u1",
@@ -198,20 +203,23 @@ test("poller: cross-repo read review runs in target repo top-level (mocked adapt
     text: `@claude repo=${otherRepo} -- review the latest changes`,
     execFileImpl: execFile, // real execFile for git operations
     adapters: { claude: mockClaudeAdapter },
+    backgroundImpl: syncBackground,
   });
 
+  // The result is the ack (background not run yet).
   assert.equal(result.handled, true);
-  assert.equal(result.outcome, "ok");
-  assert.match(result.reply, /Review/);
+  assert.equal(result.outcome, "started");
+  assert.ok(result.ack, "should have an ack message");
+  assert.match(result.ack, /claude/);
+
+  // Now run the background work synchronously and await it.
+  assert.ok(backgroundFn, "backgroundImpl should have been called");
+  await backgroundFn();
 
   // The adapter must have been called with the other repo's top-level.
   assert.ok(adapterCallArgs, "adapter should have been called");
   assert.equal(adapterCallArgs.repoToplevel, otherRepo);
   assert.equal(adapterCallArgs.mode, "read");
-
-  // An ack was generated.
-  assert.ok(result.ack, "should have an ack message");
-  assert.match(result.ack, /claude/);
 });
 
 test("poller: handleV2Message returns router error for mode=write without repo=", async () => {

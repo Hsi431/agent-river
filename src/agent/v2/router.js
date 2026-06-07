@@ -30,6 +30,10 @@ export function parseV2Message(text) {
   }
 
   const rawAgent = agentMatch[1];
+  // §15.G: unknown @name → not a v2 message (fall through to v1).
+  if (!V2_AGENT_NAMES.has(rawAgent)) {
+    return null;
+  }
   const agent = normalizeAgent(rawAgent);
   const rest = raw.slice(agentMatch[0].length).replace(/^\s+/, "");
 
@@ -104,6 +108,10 @@ export function parseV2Message(text) {
     prompt,
   };
 }
+
+// §15.G: Only @codex, @claude, @opus (→claude) are v2 agents.
+// Any other @name is not a v2 message and returns null.
+const V2_AGENT_NAMES = new Set(["codex", "claude", "opus"]);
 
 // Normalise @agent names. @opus → claude (back-compat); @claude → claude.
 function normalizeAgent(raw) {
