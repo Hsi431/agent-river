@@ -1,6 +1,6 @@
 {
   "name": "agent-river",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Local approval-gated Codex/Telegram agent control plane.",
   "type": "module",
   "bin": {

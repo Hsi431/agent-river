@@ -2,7 +2,7 @@
 
 All notable changes to Agent River will be documented in this file.
 
-## Unreleased
+## v0.2.0 — 2026-06-08
 
 ### v2 Phase 1 (branch: v2-phase1)
 
