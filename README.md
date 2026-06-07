@@ -21,36 +21,83 @@ runtime dependencies**, and never spawns a shell — agents are launched as boun
 tool-restricted workers, not handed a blank cheque.
 
 > Status: **early but usable** for local, single-operator use. The core flows —
-> Telegram gateway, approvals, dispatch, runners, ledger, secret-scan — are
-> covered by 360+ tests and run without `codex-memory-river`.
+> v2 direct agent control (`@agent repo= mode=`), the Telegram gateway, approvals,
+> dispatch, runners, ledger, secret-scan — are covered by 500+ tests and run
+> without `codex-memory-river`.
 
 ---
 
 ## What it feels like
 
+**v2 — direct control.** Name an agent, a repo, and a capability; the rest is your prompt:
+
 ```text
-You      ›  agent status
-Bot      ›  Tasks: 3  queued=1 done=2 failed=0  kill_switch=false  remaining_tokens=18540
+You  ›  @claude repo=agent-river -- when was the README last changed?
+Bot  ›  ▶ claude · /home/you/agent-river · mode=read · session=new   turn=v2turn_…
+           … the turn runs in the background; /status and /stop work meanwhile …
+Bot  ›  • README.md — last modified 2026-06-06 15:12:58 +0800
+           Last README commit: 801f943 (2026-06-06 15:14:25).
 
-You      ›  @claude review the latest diff for security issues
-Bot      ›  Claude received it, working on it now. (msg_17a3…)
-            … a tool-restricted, read-only Claude reviews the repo …
-Bot      ›  Claude:
-            Findings by severity:
-            • src/auth.js:42 — token compared with == (timing leak). …
-            No edits made — the review lane is read-only.
-
-You      ›  @opus fix the typo in the README intro
-Bot      ›  Pending edit task created (task_17a3…); nothing changes until you approve.
-            [ Approve ]  [ Reject ]  [ Status ]
-You      ›  (taps Approve)
-Bot      ›  Edit task approved and completed (task_17a3…).
-            Changes: README.md | 2 +-
-            Verify:  pass (npm test)
+You  ›  @codex repo=agent-river mode=write -- fix the typo in the intro
+Bot  ›  ▶ codex · /home/you/agent-river · mode=write · session=new   turn=v2turn_…
+           … write turns may edit the repo; inspect `git diff` yourself, re-send if needed …
 ```
+
+**v1 — approval lanes** (still available): plan/edit tasks with `[ Approve ]`
+buttons, a read-only review runner, and owner-approved cross-agent dispatch.
 
 *Illustrative. The bot replies in your language; owner-facing notices default to
 Traditional Chinese for Chinese input.*
+
+---
+
+## Driving agents directly (v2)
+
+The v2 path turns Telegram into a remote launcher for the `claude` and `codex`
+CLIs on your machine — as **general agents**, not bespoke review/coding pipelines.
+One deterministic grammar, no intent-guessing:
+
+```text
+@<agent> [repo=<name|/abs>] [mode=read|write] [--] <your prompt>
+```
+
+- **Agents:** `@claude` and `@codex` (plus `@opus`, a Claude alias). No other
+  `@name` is a v2 agent — it falls through to v1.
+- **`repo=`** picks the working directory — a direct child of your `workspace_root`,
+  or an absolute path. Omit it to use your active repo, else `default_repo`. The
+  canonical git top-level is the repo identity, so `repo=proj` and `repo=proj/src`
+  are the same session.
+- **`mode=read`** (default) reviews / answers / plans **read-only**. **`mode=write`**
+  may edit the repo and **requires an explicit `repo=`** (so a write never lands in
+  the wrong project). Telegram can select only `read`/`write` — never
+  `danger-full-access`.
+- Text after the leading control tokens (or after `--`) is the prompt.
+
+What you get:
+
+- An immediate **start ack** — `agent · repo (real path) · mode · session` — then
+  the turn runs **in the background**; the result arrives as a follow-up message.
+- **`/stop`** terminates the running agent's whole process group; **`/status`**
+  (or `/context`) reports the active turn and your sessions without calling a
+  model. The kill switch stops everything.
+- **Sessions resume** per `(you, chat, agent, repo, mode)`: a follow-up in the same
+  lane remembers context; a different repo or mode is a separate session. One
+  active turn per session key at a time.
+- A `write` turn with an uncertain result is **never auto-rerun** — inspect
+  `git diff` and re-send.
+
+Enable it once (owner):
+
+```sh
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
+  --v2-enabled true --workspace-root /home/you
+```
+
+**Trust model:** running an agent over Telegram is treated as **equivalent to you
+running `claude`/`codex` by hand** in that repo (local parity). The boundary is the
+owner allowlist, the provider's own permission system, and the read/write
+capability ceiling — not an OS sandbox. See
+[`docs/AGENT_RIVER_V2_PHASE1.md`](docs/AGENT_RIVER_V2_PHASE1.md).
 
 ---
 
@@ -179,9 +226,12 @@ you actually type **into the Telegram chat** (not the shell):
 | `agent thread msg_…` | Show an exchange thread |
 | `agent config opus-model sonnet\|opus\|default` | Set the Claude runner model |
 | `agent config codex-model <model\|default>` | Set the Codex runner model |
-| `@claude <message>` | Ask Claude — read-only review lane (alias for `@opus`) |
-| `@opus <message>` | Ask Claude/Opus |
-| `@codex <message>` | Send a message to Codex |
+| `@claude repo=… [mode=read\|write] -- …` | **v2:** run Claude in a repo (ack now, result in the background) |
+| `@codex repo=… [mode=read\|write] -- …` | **v2:** run Codex in a repo |
+| `/stop` | **v2:** stop the running turn — terminates the whole process group |
+| `/status` · `/context` | **v2:** active turn + your sessions (no model call) |
+| `@claude <message>` · `@opus <message>` | **v1:** read-only review lane (`@opus` is a Claude alias) |
+| `@codex <message>` | **v1:** send a message to Codex |
 | `@opus inbox` · `@opus replies` | List pending messages / replies for that agent |
 | `name: <message>` | Same as `@name <message>` |
 
