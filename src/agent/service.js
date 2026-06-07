@@ -418,6 +418,104 @@ export function writeOpusEditSettings({ settingsPath, repoDir } = {}) {
   return { path: dest, written: true };
 }
 
+// ── Codex exchange auto-runner service ───────────────────────────────────────
+//
+// Mirrors the Opus runner service, but ExecStart runs:
+//   node bin/codex-agent.js exchange-runner --agent codex --once
+// No settings file needed (codex uses its own sandbox via codex exec).
+
+const CODEX_RUNNER_SERVICE_NAME = "codex-agent-codex-runner.service";
+const CODEX_RUNNER_TIMER_NAME = "codex-agent-codex-runner.timer";
+const DEFAULT_CODEX_RUNNER_INTERVAL_SECONDS = 90;
+
+export function buildCodexRunnerService({ repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const interval = Number.isFinite(Number(intervalSeconds)) && Number(intervalSeconds) > 0
+    ? Math.floor(Number(intervalSeconds))
+    : DEFAULT_CODEX_RUNNER_INTERVAL_SECONDS;
+
+  const args = [
+    path.join(repoDir, "bin", "codex-agent.js"),
+    "exchange-runner",
+    "--agent", "codex",
+    "--once",
+  ];
+  const execStart = `${nodePath} ${args.join(" ")}`;
+
+  const unit = [
+    "[Unit]",
+    "Description=Codex Agent Codex exchange auto-runner (one-shot, mailbox task executor)",
+    "",
+    "[Service]",
+    "Type=oneshot",
+    `WorkingDirectory=${repoDir}`,
+    `Environment=PATH=${SERVICE_PATH}`,
+    `ExecStart=${execStart}`,
+    "",
+  ].join("\n");
+
+  const timer = [
+    "[Unit]",
+    "Description=Run the Codex exchange auto-runner periodically",
+    "",
+    "[Timer]",
+    "OnBootSec=2min",
+    `OnUnitActiveSec=${interval}s`,
+    `Unit=${CODEX_RUNNER_SERVICE_NAME}`,
+    "Persistent=false",
+    "",
+    "[Install]",
+    "WantedBy=timers.target",
+    "",
+  ].join("\n");
+
+  return {
+    unit_name: CODEX_RUNNER_SERVICE_NAME,
+    timer_name: CODEX_RUNNER_TIMER_NAME,
+    interval_seconds: interval,
+    unit,
+    timer,
+  };
+}
+
+export function writeCodexRunnerService({ dir, repoDir, nodePath, intervalSeconds } = {}) {
+  if (!dir) {
+    throw new Error("Missing required --dir");
+  }
+  const built = buildCodexRunnerService({ repoDir, nodePath, intervalSeconds });
+  fs.mkdirSync(dir, { recursive: true });
+  const unitPath = path.join(dir, built.unit_name);
+  const timerPath = path.join(dir, built.timer_name);
+  fs.writeFileSync(unitPath, built.unit);
+  fs.writeFileSync(timerPath, built.timer);
+  return {
+    unit_path: unitPath,
+    timer_path: timerPath,
+    unit_name: built.unit_name,
+    timer_name: built.timer_name,
+    note: "Files written but NOT enabled. This tool never runs systemctl.",
+    next_steps: codexRunnerServiceStatus({ dir }).commands,
+  };
+}
+
+export function codexRunnerServiceStatus({ dir, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
+  const built = buildCodexRunnerService({ repoDir, nodePath, intervalSeconds });
+  const unitPath = path.join(targetDir, CODEX_RUNNER_SERVICE_NAME);
+  const timerPath = path.join(targetDir, CODEX_RUNNER_TIMER_NAME);
+  return {
+    dir: targetDir,
+    unit: { name: CODEX_RUNNER_SERVICE_NAME, path: unitPath, ...fileDrift(unitPath, built.unit) },
+    timer: { name: CODEX_RUNNER_TIMER_NAME, path: timerPath, ...fileDrift(timerPath, built.timer) },
+    note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
+    commands: {
+      reload: "systemctl --user daemon-reload",
+      enable: `systemctl --user enable --now ${CODEX_RUNNER_TIMER_NAME}`,
+      disable: `systemctl --user disable --now ${CODEX_RUNNER_TIMER_NAME}`,
+      logs: `journalctl --user -u ${CODEX_RUNNER_SERVICE_NAME}`,
+    },
+  };
+}
+
 export function telegramCodexServiceStatus({ dir, mode = "timer" } = {}) {
   const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
   if (mode === "bridge") {
