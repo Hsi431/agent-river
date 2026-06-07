@@ -20,7 +20,7 @@ import { codexReplyOnce } from "./codex-reply.js";
 import { telegramCodexLoop, telegramCodexLoopDryRun, telegramCodexOnce } from "./telegram-codex.js";
 import { telegramCodexBridge, telegramCodexBridgeStatus } from "./telegram-codex-bridge.js";
 import { approveAndSendReply, approveReply, listPendingReplyApprovals, rejectReply } from "./reply-approval.js";
-import { buildTelegramCodexService, telegramCodexServiceStatus, writeTelegramCodexService, buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings } from "./service.js";
+import { buildTelegramCodexService, telegramCodexServiceStatus, writeTelegramCodexService, buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus } from "./service.js";
 import {
   claimExchangeMessage,
   exchangeStatus,
@@ -33,6 +33,7 @@ import {
   submitExchangeMessage,
 } from "./exchange.js";
 import { runExchangeRunnerOnce, defaultRunnerSettingsPath, runnerSessionStatus } from "./exchange-runner.js";
+import { runCodexExchangeRunnerOnce } from "./codex-exchange-runner.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "./orchestrator.js";
 import { resolveAgentHome } from "./paths.js";
@@ -47,7 +48,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "channel", "chat-id", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "per-chat-interval-seconds", "repo", "request", "require-approval", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "transport", "update-json", "user", "v2-enabled", "workspace-root"]);
+  validateValueOptions(args, ["agent", "channel", "chat-id", "codex-runner-model", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "per-chat-interval-seconds", "repo", "request", "require-approval", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "transport", "update-json", "user", "v2-enabled", "workspace-root"]);
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
@@ -128,8 +129,14 @@ export async function runAgentCli(argv) {
       return printResult({ dispatch: getDispatchApproval(agentHome, requireArg(args, "id")) });
     case "exchange-runner": {
       const runnerAgent = args.agent || "opus";
+      if (runnerAgent === "codex") {
+        return printResult(await runCodexExchangeRunnerOnce({
+          agentHome,
+          repoDir: args.repo || process.cwd(),
+        }));
+      }
       if (runnerAgent !== "opus") {
-        throw new Error("exchange-runner v1 only supports --agent opus");
+        throw new Error(`exchange-runner: unknown agent "${runnerAgent}". Supported: opus, codex`);
       }
       return printResult(await runExchangeRunnerOnce({
         agentHome,
@@ -268,6 +275,7 @@ export async function runAgentCli(argv) {
           exchange_notify_max_per_cycle: args["exchange-notify-max-per-cycle"],
           exchange_runner_enabled: args["exchange-runner-enabled"],
           exchange_runner_model: args["exchange-runner-model"],
+          codex_runner_model: args["codex-runner-model"],
           exchange_runner_max_attempts: args["exchange-runner-max-attempts"],
           exchange_runner_timeout_seconds: args["exchange-runner-timeout-seconds"],
           exchange_runner_daily_max: args["exchange-runner-daily-max"],
@@ -292,6 +300,12 @@ export async function runAgentCli(argv) {
         intervalSeconds: args["interval-seconds"],
         settingsPath: args.settings,
       }));
+    case "codex-runner-service-print":
+      return printResult(buildCodexRunnerService({ repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "codex-runner-service-write":
+      return printResult(writeCodexRunnerService({ dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "codex-runner-service-status":
+      return printResult(codexRunnerServiceStatus({ dir: args.dir, repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
     case "exchange-runner-settings-print":
       return printResult(buildOpusRunnerSettings());
     case "exchange-runner-settings-write":
@@ -387,10 +401,14 @@ function printHelp() {
   dispatch-list [--status pending|approved|rejected]
   dispatch-show --id dispatch_id
   exchange-runner --agent opus --once [--repo /path] [--settings /path/opus-runner-settings.json]
+  exchange-runner --agent codex --once [--repo /path]
   exchange-runner-session-status [--chat-id telegram_chat_id]
   exchange-runner-service-print [--repo /path] [--interval-seconds N]
   exchange-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
   exchange-runner-service-status [--dir DIR] [--repo /path] [--interval-seconds N] [--settings /path/opus-runner-settings.json]
+  codex-runner-service-print [--repo /path] [--interval-seconds N]
+  codex-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
+  codex-runner-service-status [--dir DIR] [--repo /path] [--interval-seconds N]
   exchange-runner-settings-print
   exchange-runner-settings-write [--settings /path/opus-runner-settings.json]
   opus-edit-settings-print [--repo /path]
@@ -421,7 +439,7 @@ function printHelp() {
   reply-approval-approve --id approval_id
   reply-approval-reject --id approval_id
   telegram-codex-policy
-  telegram-codex-policy-set [--enabled true|false] [--require-approval true|false] [--global-interval-seconds N] [--per-chat-interval-seconds N] [--max-model-calls-per-run N] [--default-repo /path] [--history-messages N] [--context-max-chars N] [--memory-enabled true|false] [--direct-send-enabled true|false] [--direct-send-user ID] [--direct-send-user-remove ID] [--direct-send-max-chars N] [--direct-send-daily-max N] [--direct-send-min-remaining-tokens N] [--direct-send-trusted-qa-enabled true|false] [--direct-send-trusted-qa-max-chars N] [--owner-mode-enabled true|false] [--owner-low-risk-auto-plan-enabled true|false] [--exchange-notify-enabled true|false] [--exchange-notify-chat-id ID] [--exchange-notify-max-per-cycle N] [--exchange-runner-enabled true|false] [--exchange-runner-model sonnet|opus] [--exchange-runner-max-attempts N] [--exchange-runner-timeout-seconds N] [--exchange-runner-daily-max N]
+  telegram-codex-policy-set [--enabled true|false] [--require-approval true|false] [--global-interval-seconds N] [--per-chat-interval-seconds N] [--max-model-calls-per-run N] [--default-repo /path] [--history-messages N] [--context-max-chars N] [--memory-enabled true|false] [--direct-send-enabled true|false] [--direct-send-user ID] [--direct-send-user-remove ID] [--direct-send-max-chars N] [--direct-send-daily-max N] [--direct-send-min-remaining-tokens N] [--direct-send-trusted-qa-enabled true|false] [--direct-send-trusted-qa-max-chars N] [--owner-mode-enabled true|false] [--owner-low-risk-auto-plan-enabled true|false] [--exchange-notify-enabled true|false] [--exchange-notify-chat-id ID] [--exchange-notify-max-per-cycle N] [--exchange-runner-enabled true|false] [--exchange-runner-model sonnet|opus] [--codex-runner-model MODEL] [--exchange-runner-max-attempts N] [--exchange-runner-timeout-seconds N] [--exchange-runner-daily-max N]
   telegram-codex-loop-dry-run
   telegram-codex-loop --allow-real-codex --iterations N [--sleep-seconds N] [--transport fetch|curl]
   telegram-codex-bridge --allow-real-codex [--transport fetch|curl] [--long-poll-seconds N] [--max-cycles N] [--max-runtime-seconds N]

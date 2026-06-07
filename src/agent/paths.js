@@ -46,5 +46,8 @@ export function agentPaths(agentHome) {
     bridgeStatus: path.join(agentHome, "telegram-codex-bridge-status.json"),
     v2PollerLock: path.join(agentHome, "v2-poller.lock"),
     v2Outbox: path.join(agentHome, "v2-outbox.jsonl"),
+    codexExchangeRunnerDispatch: path.join(agentHome, "codex-exchange-runner-dispatch.jsonl"),
+    codexExchangeRunnerLock: path.join(agentHome, "codex-exchange-runner.lock"),
+    codexExchangeRunnerLogsDir: path.join(agentHome, "codex-exchange-runner-logs"),
   };
 }
