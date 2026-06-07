@@ -36,9 +36,12 @@ All notable changes to Agent River will be documented in this file.
   `repo_unavailable` if active repo has moved/been deleted; failure-reason
   messages for all outcome codes and resolver/router errors.
 - **v1/v2 single-poller routing** (`src/agent/v2/poller.js`): `@agent ...`
-  messages route to v2; everything else stays on v1. Versioned callbacks:
-  `v2:turn:<id>:<action>` namespace; `parseV2Callback`, `isV1Callback`,
-  `makeV2CallbackData`. `schema_version` on v2 run records.
+  messages route to v2; everything else stays on v1. `schema_version` on v2 run
+  records.
+- **v2 callback helpers are RESERVED for Phase 3, not a wired path** (§15.J). The
+  `v2:turn:<id>:<action>` namespace and `parseV2Callback` / `isV1Callback` /
+  `makeV2CallbackData` are scaffolding only; no Telegram callback button is wired
+  to them in Phase 1. Per-action approval over callbacks stays Phase 3.
 - Tests: 67 new tests covering all spec §13 acceptance criteria (§13.1–9). All
   tests are injectable (no real `codex`/`claude` binary required).
 
@@ -58,6 +61,31 @@ All notable changes to Agent River will be documented in this file.
   secret-redacted, like v1.
 - Added `v2_enabled` (default off) and `workspace_root` to the policy schema +
   `--v2-enabled` / `--workspace-root` CLI flags, so v2 has a production config path.
+
+#### Fixes (post round-2 Codex review, spec §15)
+- **Codex `--json` parser** (§15.D): extract final text from
+  `item.completed`/`agent_message` events, sum tokens from `turn.completed`
+  usage, and read the thread/session id from the start event — real `codex exec
+  --json` format, with JSONL fixtures.
+- **Codex resume carries the prompt** (§15.E): `codex exec resume <id>` sends the
+  user's new prompt via stdin like a fresh turn (no more null prompt on resume).
+- **Background execution + real PID** (§15.A/B): `@agent` turns ack immediately,
+  advance the offset, and run in the background; results land in a durable v2
+  outbox flushed each poll cycle. Adapters report the spawned PID via `onSpawn`,
+  so the active-turn registry stores the real PID and `/stop` + the kill-switch
+  sweep can terminate a running child.
+- **Process-group timeout** (§15.C): manual `SIGTERM → grace → SIGKILL → confirm`
+  on the whole group instead of execFile's built-in `timeout` (which leaves
+  detached grandchildren). Fixed a hang where a synchronously-settling
+  `execFileImpl` left the kill timer uncleared.
+- **Claude settings fail-closed** (§15.F): a missing read/write settings profile
+  returns `capability_blocked` instead of launching Claude with provider defaults.
+- **Router agent allowlist** (§15.G): only `@codex`/`@claude`/`@opus` are v2; any
+  other `@name` falls through to v1.
+- **Single-poller lock** (§15.H): a lockfile under agent state; a second poller
+  refuses to start.
+- **`/status` lists real sessions** (§15.I): `buildStatusReport` enumerates the
+  `(owner, chat)` sessions from the store plus active turns.
 
 #### Coexistence
 - v1 classifier / task planner / repo allowlist are unchanged. v2 is a new code
