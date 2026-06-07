@@ -261,3 +261,69 @@ All tests must pass under a clean `HOME` (CI parity): run with
 Do not delete v1 classifier / task planner / repo allowlist in Phase 1 beyond what
 is needed to route v2; full removal is Phase 2 once v1 actions have a retirement
 window.
+
+---
+
+## 15. Amendments (post round-2 Codex review) — these OVERRIDE conflicting text above
+
+These are part of Phase 1 acceptance. The first implementation was inline +
+mock-only and did not meet several criteria; the following are mandatory.
+
+### A. Execution is BACKGROUND, not inline (supersedes any inline reading of §10)
+- On an `@agent` turn: send the start ack immediately, advance the Telegram
+  offset, and run the turn in the bridge process **in the background**. The poller
+  must keep receiving `/stop`, `/status`, and kill switch every cycle.
+- Deliver the turn result via a **durable v2 outbox** (JSONL under agent state)
+  that the poller flushes each cycle (mirror the existing `telegram-outbox`).
+- Still one active turn per session key.
+
+### B. Kill switch / /stop must actually terminate the running child (§7, §12.2)
+- The adapter reports the spawned child PID immediately via an `onSpawn(pid)` hook;
+  the active-turn registry stores the **real PID** (never null).
+- `/stop` (Telegram) → `stopAllTurns()` in the bridge process.
+- Each poll cycle, if `checkSafety().ok` is false, the bridge calls
+  `stopAllTurns()`.
+- Termination targets the whole **process group**: `SIGTERM` to `-pid`, grace
+  period, `SIGKILL` to `-pid`, confirm the group is gone, then mark
+  `timed_out` / `cancelled`.
+
+### C. Custom process-group timeout (supersedes execFile `timeout`)
+- Do **not** use execFile's built-in `timeout` (kills only the direct child; with
+  `detached` the grandchildren survive). Use a manual timer: `process.kill(-pid,
+  "SIGTERM")` → grace → `process.kill(-pid, "SIGKILL")` → confirm → `timed_out`.
+
+### D. Codex `--json` event schema (real format — fix parser + real fixtures)
+- Final text: `{"type":"item.completed","item":{"type":"agent_message","text":"…"}}`
+  → concatenate the `agent_message` texts.
+- Tokens: `{"type":"turn.completed","usage":{"input_tokens":N,"output_tokens":N}}`
+  → sum input+output.
+- Session/thread id: from the thread/session start event. Tests must use
+  real-format JSONL fixtures, not the invented shape.
+
+### E. Codex resume must carry the new prompt
+- `codex exec resume <session-id> …` must still send the user's new prompt (stdin,
+  same as the non-resume path). Never null the prompt on resume. Test asserts the
+  prompt reaches argv/stdin on resume.
+
+### F. Claude settings fail-closed
+- If the required read/write settings profile is missing in production, return
+  `capability_blocked` / `spawn_error` — do **not** launch Claude with provider
+  defaults. (Tests may inject `execFileImpl` to bypass.)
+
+### G. Router agent allowlist
+- Only `@codex`, `@claude`, `@opus`(→claude) are v2 agents. Any other `@name` is
+  **not** a v2 message (`routeUpdate` → not v2) and falls through to v1 / normal
+  Telegram.
+
+### H. Single-poller cross-process guard
+- Acquire a cross-process poller lock (lockfile under agent state) when a
+  bridge/poll loop starts; a second poller refuses to start with a clear error.
+  Old timer/service must be disabled on deploy (documented).
+
+### I. /status shows real session context
+- `buildStatusReport` lists the relevant sessions for `(owner, chat)` from the
+  session store, plus any active turn — not just "none".
+
+### J. v2 callbacks are RESERVED, not implemented
+- CHANGELOG must describe the v2 callback helpers as reserved for Phase 3, not a
+  wired callback path. Do not claim kill switch / stop are done until B ships.
