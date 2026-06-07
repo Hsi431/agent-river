@@ -3,7 +3,8 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { shortHash } from "../lib/hash.js";
 import { appendJsonl, readJsonl } from "../lib/jsonl.js";
-import { scanSecrets } from "../lib/secret-scan.js";
+import { scanSecrets, redactSecrets } from "../lib/secret-scan.js";
+import { routeUpdate, handleV2Message, handleV2Stop, handleV2Status } from "./v2/poller.js";
 import { enqueueChatMessage, listPendingChatReplies, markChatReplySent } from "./chat.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { agentPaths } from "./paths.js";
@@ -32,6 +33,13 @@ export async function handleTelegramUpdate({ agentHome, update, memoryStateHome,
   const message = extractMessage(update);
   if (!message) {
     return { ok: false, payload: null, reason: "unsupported_update" };
+  }
+
+  // v2 intercept (opt-in, owner-only): a single poller routes @agent / control
+  // messages to the v2 path; everything else falls through to v1 unchanged.
+  const v2 = await maybeHandleV2({ agentHome, message, execFileImpl });
+  if (v2) {
+    return v2;
   }
 
   if (!isGatewayText(message.text, agentHome)) {
@@ -74,6 +82,49 @@ export async function handleTelegramUpdate({ agentHome, update, memoryStateHome,
         : {}),
       ...(gateway.reply_markup ? { reply_markup: gateway.reply_markup } : {}),
     },
+  };
+}
+
+// v2 intercept: opt-in (policy.v2_enabled), owner-only. Routes `/stop`, `/status`,
+// and `@agent ...` messages to the v2 path; returns null to fall through to v1.
+// The agent turn runs inline (single-flight, like v1 owner edits); ack + result
+// are returned as one redacted message.
+async function maybeHandleV2({ agentHome, message, execFileImpl }) {
+  const policy = getTelegramCodexPolicy(agentHome);
+  if (!policy.v2_enabled) {
+    return null;
+  }
+  const ownerUserId = String(message.from.id);
+  if (!isOwner({ user_id: ownerUserId }, policy)) {
+    return null; // v2 is owner-only; non-owners fall through to v1.
+  }
+  const chatId = String(message.chat.id);
+  const text = String(message.text || "").trim();
+
+  if (text === "/stop") {
+    return v2Payload(message, handleV2Stop().reply);
+  }
+  if (text === "/status" || text === "/context") {
+    return v2Payload(message, handleV2Status(agentHome, { ownerUserId, chatId }).reply);
+  }
+  if (routeUpdate(text) !== "v2") {
+    return null; // not a v2 @agent message; let v1 handle it.
+  }
+
+  const result = await handleV2Message({ agentHome, ownerUserId, chatId, text, execFileImpl });
+  if (!result || !result.handled) {
+    return null;
+  }
+  const body = result.ack ? `${result.ack}\n\n${result.reply}` : result.reply;
+  return v2Payload(message, body, { v2: result });
+}
+
+function v2Payload(message, text, extra = {}) {
+  return {
+    ok: true,
+    payload: { method: "sendMessage", chat_id: message.chat.id, text: redactSecrets(String(text || "")) },
+    reason: "v2",
+    ...extra,
   };
 }
 

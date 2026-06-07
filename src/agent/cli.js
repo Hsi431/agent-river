@@ -47,7 +47,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "channel", "chat-id", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "per-chat-interval-seconds", "repo", "request", "require-approval", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "transport", "update-json", "user"]);
+  validateValueOptions(args, ["agent", "channel", "chat-id", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "per-chat-interval-seconds", "repo", "request", "require-approval", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "transport", "update-json", "user", "v2-enabled", "workspace-root"]);
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
@@ -275,6 +275,8 @@ export async function runAgentCli(argv) {
           direct_send_allow_action_claims: args["direct-send-allow-action-claims"],
           direct_send_user_add: args["direct-send-user"],
           direct_send_user_remove: args["direct-send-user-remove"],
+          v2_enabled: args["v2-enabled"],
+          workspace_root: args["workspace-root"],
         }).telegram_codex_policy,
       });
     case "telegram-codex-loop-dry-run":

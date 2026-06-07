@@ -133,6 +133,9 @@ function spawnClaude({ args, cwd, timeoutMs, signal, execFileImpl }) {
       env: spawnEnvWithLocalBin(),
       timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
+      // Own process group so abort/kill-switch can SIGTERM the whole group
+      // (process.kill(-pid)), not just the direct child (§12.2).
+      detached: true,
     }, (error, stdout, stderr) => {
       if (settled) return;
       settled = true;
@@ -253,6 +256,9 @@ function spawnCodex({ args, cwd, promptText, timeoutMs, signal, execFileImpl }) 
       cwd,
       timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
+      // Own process group so abort/kill-switch can SIGTERM the whole group
+      // (process.kill(-pid)), not just the direct child (§12.2).
+      detached: true,
     }, (error, stdout, stderr) => {
       if (settled) return;
       settled = true;

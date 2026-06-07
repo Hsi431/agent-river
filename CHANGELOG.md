@@ -48,6 +48,17 @@ All notable changes to Agent River will be documented in this file.
   and acknowledgement of deferred Phase 2 hardening (OS sandbox,
   per-action approval, project-settings isolation).
 
+#### Integration & fixes (post Opus review)
+- Adapters now spawn `detached: true` so the kill switch / `/stop` can SIGTERM the
+  agent's whole process group, not just the direct child (§12.2 was previously
+  half-met: `process.kill(-pid)` always fell back to a single-process kill).
+- Wired v2 into the single Telegram dispatcher (`handleTelegramUpdate`): opt-in via
+  `policy.v2_enabled`, owner-only; routes `@agent ...`, `/stop`, `/status` to v2,
+  everything else falls through to v1 unchanged. Outbound v2 replies are
+  secret-redacted, like v1.
+- Added `v2_enabled` (default off) and `workspace_root` to the policy schema +
+  `--v2-enabled` / `--workspace-root` CLI flags, so v2 has a production config path.
+
 #### Coexistence
 - v1 classifier / task planner / repo allowlist are unchanged. v2 is a new code
   path added alongside v1, not replacing it.

@@ -190,6 +190,10 @@ const DEFAULT_TELEGRAM_CODEX_POLICY = {
   exchange_runner_max_attempts: 2,
   exchange_runner_timeout_seconds: 600,
   exchange_runner_daily_max: 20,
+  // v2: opt-in routing flag + workspace root for the repo resolver. v2 is off by
+  // default so v1 behavior is unchanged until the owner enables it.
+  v2_enabled: false,
+  workspace_root: null,
 };
 
 const DIRECT_SEND_CLASSES = ["ack", "greeting", "smalltalk"];
@@ -291,6 +295,12 @@ export function setTelegramCodexPolicy(agentHome, patch = {}) {
     const id = requireNonEmptyString(patch.direct_send_user_add, "direct-send-user");
     next.direct_send_user_allowlist = Array.from(new Set([...(next.direct_send_user_allowlist || []), id]));
   }
+  if (patch.v2_enabled !== undefined) {
+    next.v2_enabled = parseBool(patch.v2_enabled, "v2-enabled");
+  }
+  if (patch.workspace_root !== undefined) {
+    next.workspace_root = patch.workspace_root === null ? null : requireNonEmptyString(patch.workspace_root, "workspace-root");
+  }
   if (patch.direct_send_user_remove !== undefined) {
     const id = requireNonEmptyString(patch.direct_send_user_remove, "direct-send-user-remove");
     next.direct_send_user_allowlist = (next.direct_send_user_allowlist || []).filter((u) => u !== id);
@@ -340,6 +350,8 @@ function normalizeTelegramCodexPolicy(value) {
     exchange_runner_max_attempts: positiveIntegerOr(v.exchange_runner_max_attempts, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_max_attempts),
     exchange_runner_timeout_seconds: positiveIntegerOr(v.exchange_runner_timeout_seconds, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_timeout_seconds),
     exchange_runner_daily_max: nonNegativeIntegerOr(v.exchange_runner_daily_max, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_daily_max),
+    v2_enabled: Boolean(v.v2_enabled),
+    workspace_root: typeof v.workspace_root === "string" && v.workspace_root.trim() ? v.workspace_root.trim() : null,
     // DS1: these are hard-forced off regardless of stored value.
     direct_send_memory: false,
     direct_send_allow_action_claims: false,
