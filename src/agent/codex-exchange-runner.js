@@ -11,6 +11,7 @@ import {
   releaseExchangeClaim,
   replyExchangeMessage,
 } from "./exchange.js";
+import { isSessionExchangeEligible } from "./sessions.js";
 import { DISPATCH_CHANNEL, dispatchTargetAllowlist } from "./dispatch.js";
 import { realCodexRunner } from "./codex-runner.js";
 
@@ -57,9 +58,10 @@ export async function runCodexExchangeRunnerOnce({
       return summary({ ran: false, reason: "daily_max" });
     }
 
-    const message = pickEligibleCodexMessage(agentHome);
+    const skippedSession = recordFirstSkippedCodexSessionMessage(agentHome, paths, now);
+    const message = pickEligibleCodexMessage(agentHome, { now });
     if (!message) {
-      return summary({ ran: false, reason: "no_eligible_message" });
+      return summary(skippedSession || { ran: false, reason: "no_eligible_message" });
     }
 
     const priorAttempts = codexSpawnAttemptsFor(paths, message.id);
@@ -201,18 +203,39 @@ export function buildCodexPrompt({ agentHome, msgId, repoDir }) {
   ].join("\n");
 }
 
-export function pickEligibleCodexMessage(agentHome) {
+export function pickEligibleCodexMessage(agentHome, { now = Date.now() } = {}) {
   // Sender allowlist: only trusted agents (the primary agent + enabled exchange
   // agents, e.g. opus) may auto-task codex. A message from any other source is
   // NOT picked up by the runner, mirroring the opus runner's from-filter.
   const allowedSenders = dispatchTargetAllowlist(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
     .filter((message) => message.to === RUNNER_AGENT
-      && allowedSenders.has(String(message.from))
-      && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
+      && (message.session_id
+        ? isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }).eligible
+        : (allowedSenders.has(String(message.from))
+          && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)))
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
   return eligible[0] || null;
+}
+
+function recordFirstSkippedCodexSessionMessage(agentHome, paths, now) {
+  const skipped = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
+    .filter((message) => message.to === RUNNER_AGENT && message.session_id && isAvailableClaim(message.claim))
+    .map((message) => ({ message, gate: isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }) }))
+    .filter(({ gate }) => !gate.eligible)
+    .sort((a, b) => String(a.message.created_at || "").localeCompare(String(b.message.created_at || "")))[0];
+  if (!skipped) {
+    return null;
+  }
+  const reason = skipped.gate.reason || "session_not_eligible";
+  const alreadyRecorded = readJsonl(paths.codexExchangeRunnerDispatch)
+    .some((row) => row.message_id === skipped.message.id && String(row.outcome || "").startsWith("session_skip:"));
+  if (alreadyRecorded) {
+    return null;
+  }
+  recordCodexDispatch(paths, { messageId: skipped.message.id, attempt: 0, outcome: `session_skip:${reason}`, model: null, now });
+  return { ran: false, reason, message_id: skipped.message.id };
 }
 
 function isAvailableClaim(claim) {

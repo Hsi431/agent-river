@@ -11,6 +11,7 @@ import {
   releaseExchangeClaim,
   replyExchangeMessage,
 } from "./exchange.js";
+import { isSessionExchangeEligible } from "./sessions.js";
 import { createDispatchApproval, DISPATCH_CHANNEL, parseDispatchProposal } from "./dispatch.js";
 
 // Opus-side exchange auto-runner (v1). Single-shot: pick at most one eligible
@@ -210,9 +211,10 @@ export async function runExchangeRunnerOnce({
       return summary({ ran: false, reason: "daily_max" });
     }
 
-    const message = pickEligibleMessage(agentHome);
+    const skippedSession = recordFirstSkippedSessionMessage(agentHome, paths, now);
+    const message = pickEligibleMessage(agentHome, { now });
     if (!message) {
-      return summary({ ran: false, reason: "no_eligible_message" });
+      return summary(skippedSession || { ran: false, reason: "no_eligible_message" });
     }
 
     // Fail closed: the restricted Claude settings file is the safety envelope
@@ -414,15 +416,36 @@ function defaultSpawnClaude({ invocation, timeoutSeconds, execFileImpl = execFil
   });
 }
 
-export function pickEligibleMessage(agentHome) {
+export function pickEligibleMessage(agentHome, { now = Date.now() } = {}) {
   const expectedFrom = getPrimaryAgentId(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
     .filter((message) => message.to === RUNNER_AGENT
-      && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
-      && message.from === expectedFrom
+      && (message.session_id
+        ? isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }).eligible
+        : ((message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
+          && message.from === expectedFrom))
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
   return eligible[0] || null;
+}
+
+function recordFirstSkippedSessionMessage(agentHome, paths, now) {
+  const skipped = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
+    .filter((message) => message.to === RUNNER_AGENT && message.session_id && isAvailableClaim(message.claim))
+    .map((message) => ({ message, gate: isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }) }))
+    .filter(({ gate }) => !gate.eligible)
+    .sort((a, b) => String(a.message.created_at || "").localeCompare(String(b.message.created_at || "")))[0];
+  if (!skipped) {
+    return null;
+  }
+  const reason = skipped.gate.reason || "session_not_eligible";
+  const alreadyRecorded = readJsonl(paths.exchangeRunnerDispatch)
+    .some((row) => row.message_id === skipped.message.id && String(row.outcome || "").startsWith("session_skip:"));
+  if (alreadyRecorded) {
+    return null;
+  }
+  recordDispatch(paths, { messageId: skipped.message.id, attempt: 0, outcome: `session_skip:${reason}`, model: null, now });
+  return { ran: false, reason, message_id: skipped.message.id };
 }
 
 function isAvailableClaim(claim) {

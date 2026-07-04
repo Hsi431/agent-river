@@ -3,17 +3,21 @@ import { redactSecrets, scanSecrets } from "../lib/secret-scan.js";
 import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 import { isExchangeAgentEnabled } from "./safety.js";
+import { assertSessionMessageAllowed, consumeBudget } from "./sessions.js";
 
 const VALID_TARGET = /^[a-z][a-z0-9_-]*$|^any$/;
 const DEFAULT_LEASE_SECONDS = 3600;
 
-export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, dispatch = null }) {
+export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, dispatch = null, sessionId = null, repo = null }) {
   const sender = requireName(from, "from");
   const target = requireName(to, "to");
   const body = String(text || "");
   if (!body.trim()) {
     throw new Error("Exchange message text is empty");
   }
+  const session = sessionId
+    ? assertSessionMessageAllowed({ agentHome, sessionId, from: sender, to: target })
+    : null;
   // Redact (not reject) secret-like content so legitimate code-review requests
   // are not blocked. Only the redacted text is persisted — raw secret text never
   // reaches the message record (id hash, text, or text_hash).
@@ -28,10 +32,23 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     chat_id: chatId ? String(chatId) : null,
     text: redacted,
     text_hash: shortHash(redacted),
+    ...(session ? { session_id: session.session_id } : {}),
+    ...(repo || session?.repo ? { repo: String(repo || session.repo) } : {}),
     ...(dispatch ? { dispatch } : {}),
     created_at: now,
   };
   appendJsonl(agentPaths(agentHome).exchangeMessages, message);
+  if (session) {
+    consumeBudget({
+      agentHome,
+      id: session.session_id,
+      messageId: message.id,
+      kind: "exchange_message",
+      from: sender,
+      to: target,
+      now: Date.parse(now),
+    });
+  }
   return message;
 }
 
@@ -100,12 +117,16 @@ export function replyExchangeMessage({ agentHome, id, agent, text }) {
   if (scanSecrets(body).length > 0) {
     throw new Error("Exchange reply may contain a secret");
   }
+  const session = message.session_id
+    ? assertSessionMessageAllowed({ agentHome, sessionId: message.session_id, from: agentId, to: message.from })
+    : null;
   const reply = {
     id: `xreply_${Date.now()}_${shortHash(`${id}:${agentId}:${body}`)}`,
     message_id: id,
     agent_id: agentId,
     text: body,
     text_hash: shortHash(body),
+    ...(session ? { session_id: session.session_id } : {}),
     created_at: new Date().toISOString(),
   };
   appendJsonl(agentPaths(agentHome).exchangeReplies, reply);
@@ -116,6 +137,17 @@ export function replyExchangeMessage({ agentHome, id, agent, text }) {
     reply_id: reply.id,
     completed_at: new Date().toISOString(),
   });
+  if (session) {
+    consumeBudget({
+      agentHome,
+      id: session.session_id,
+      messageId: reply.id,
+      kind: "exchange_reply",
+      from: agentId,
+      to: message.from,
+      now: Date.parse(reply.created_at),
+    });
+  }
   return { message, reply };
 }
 

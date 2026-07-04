@@ -33,6 +33,7 @@ export function agentPaths(agentHome) {
     exchangeClaims: path.join(agentHome, "exchange-claims.jsonl"),
     exchangeReplies: path.join(agentHome, "exchange-replies.jsonl"),
     exchangeNotifications: path.join(agentHome, "exchange-notifications.jsonl"),
+    sessions: path.join(agentHome, "sessions.jsonl"),
     exchangeRunnerDispatch: path.join(agentHome, "exchange-runner-dispatch.jsonl"),
     exchangeRunnerLock: path.join(agentHome, "exchange-runner.lock"),
     exchangeRunnerLogsDir: path.join(agentHome, "exchange-runner-logs"),

@@ -34,6 +34,7 @@ import {
 } from "./exchange.js";
 import { runExchangeRunnerOnce, defaultRunnerSettingsPath, runnerSessionStatus } from "./exchange-runner.js";
 import { runCodexExchangeRunnerOnce } from "./codex-exchange-runner.js";
+import { getSession, killSession, listActiveSessions, openSession } from "./sessions.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "./orchestrator.js";
 import { resolveAgentHome } from "./paths.js";
@@ -48,7 +49,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "channel", "chat-id", "codex-runner-model", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "per-chat-interval-seconds", "repo", "request", "require-approval", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "transport", "update-json", "user", "v2-enabled", "workspace-root"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "channel", "chat-id", "codex-runner-model", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "initiator", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "participants", "per-chat-interval-seconds", "repo", "request", "require-approval", "session", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
@@ -88,9 +89,29 @@ export async function runAgentCli(argv) {
           to: args.to || "any",
           channel: args.channel || "cli",
           threadId: args.thread,
+          sessionId: args.session || null,
           text: resolveReplyText(args),
         }),
       });
+    case "session-open":
+      return printResult({
+        session: await openSession({
+          agentHome,
+          initiator: requireArg(args, "initiator"),
+          participants: requireArg(args, "participants"),
+          repo: args.repo || null,
+          budgetMessages: args["budget-messages"],
+          budgetMinutes: args["budget-minutes"],
+          writeAccess: args["write-access"],
+          topic: requireArg(args, "topic"),
+        }),
+      });
+    case "session-list":
+      return printResult({ sessions: listActiveSessions(agentHome) });
+    case "session-show":
+      return printResult({ session: requireSession(agentHome, requireArg(args, "id")) });
+    case "session-kill":
+      return printResult({ session: killSession({ agentHome, id: requireArg(args, "id") }) });
     case "exchange-inbox":
       return printResult({ messages: listExchangeInbox(agentHome, { agent: args.agent }) });
     case "exchange-replies":
@@ -390,6 +411,10 @@ function printHelp() {
   chat-status
   chat-prune --days 30
   exchange-submit --from human --to codex --text "..."
+  session-open --initiator owner --participants codex,opus [--repo repo] [--budget-messages N] [--budget-minutes M] [--write-access codex] --topic "..."
+  session-list
+  session-show --id session_id
+  session-kill --id session_id
   exchange-inbox [--agent codex]
   exchange-replies --agent codex [--thread thread_id]
   exchange-thread --id msg_id
@@ -465,6 +490,14 @@ function requireTaskId(args) {
     throw new Error("Missing task id");
   }
   return args._[0];
+}
+
+function requireSession(agentHome, id) {
+  const session = getSession(agentHome, id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return session;
 }
 
 function filterDispatchApprovals(dispatches, status) {
