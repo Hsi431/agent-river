@@ -516,6 +516,82 @@ export function codexRunnerServiceStatus({ dir, repoDir = process.cwd(), nodePat
   };
 }
 
+// ── v3 dashboard bridge service ─────────────────────────────────────────────
+
+const DASHBOARD_SERVICE_NAME = "codex-agent-dashboard.service";
+const DEFAULT_DASHBOARD_LONG_POLL_SECONDS = 25;
+
+export function buildDashboardService({ agentHome, repoDir = process.cwd(), nodePath = process.execPath, longPollSeconds } = {}) {
+  const longPoll = Number.isFinite(Number(longPollSeconds)) && Number(longPollSeconds) >= 0
+    ? Math.floor(Number(longPollSeconds))
+    : DEFAULT_DASHBOARD_LONG_POLL_SECONDS;
+  const args = [
+    path.join(repoDir, "bin", "codex-agent.js"),
+    "dashboard-bridge",
+    "--state", agentHome,
+    "--transport", "curl",
+    "--long-poll-seconds", String(longPoll),
+  ];
+  const unit = [
+    "[Unit]",
+    "Description=Codex Agent v3 Telegram dashboard bridge",
+    "",
+    "[Service]",
+    "Type=simple",
+    `WorkingDirectory=${repoDir}`,
+    `EnvironmentFile=${ENV_FILE}`,
+    `Environment=PATH=${SERVICE_PATH}`,
+    `ExecStart=${nodePath} ${args.join(" ")}`,
+    "Restart=always",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
+  return {
+    unit_name: DASHBOARD_SERVICE_NAME,
+    env_file: ENV_FILE,
+    long_poll_seconds: longPoll,
+    unit,
+  };
+}
+
+export function writeDashboardService({ agentHome, dir, repoDir, nodePath, longPollSeconds } = {}) {
+  if (!dir) {
+    throw new Error("Missing required --dir");
+  }
+  const built = buildDashboardService({ agentHome, repoDir, nodePath, longPollSeconds });
+  fs.mkdirSync(dir, { recursive: true });
+  const unitPath = path.join(dir, built.unit_name);
+  fs.writeFileSync(unitPath, built.unit);
+  return {
+    unit_path: unitPath,
+    unit_name: built.unit_name,
+    env_file: built.env_file,
+    note: "Files written but NOT enabled. This tool never runs systemctl.",
+    next_steps: dashboardServiceStatus({ dir }).commands,
+  };
+}
+
+export function dashboardServiceStatus({ dir, agentHome, repoDir = process.cwd(), nodePath = process.execPath, longPollSeconds } = {}) {
+  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
+  const built = buildDashboardService({ agentHome, repoDir, nodePath, longPollSeconds });
+  const unitPath = path.join(targetDir, DASHBOARD_SERVICE_NAME);
+  return {
+    dir: targetDir,
+    unit: { name: DASHBOARD_SERVICE_NAME, path: unitPath, ...fileDrift(unitPath, built.unit) },
+    env_file: ENV_FILE,
+    note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
+    commands: {
+      reload: "systemctl --user daemon-reload",
+      enable: `systemctl --user enable --now ${DASHBOARD_SERVICE_NAME}`,
+      disable: `systemctl --user disable --now ${DASHBOARD_SERVICE_NAME}`,
+      logs: `journalctl --user -u ${DASHBOARD_SERVICE_NAME}`,
+    },
+  };
+}
+
 export function telegramCodexServiceStatus({ dir, mode = "timer" } = {}) {
   const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
   if (mode === "bridge") {

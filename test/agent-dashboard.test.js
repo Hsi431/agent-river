@@ -1,0 +1,283 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { runAgentCli } from "../src/agent/cli.js";
+import { agentPaths } from "../src/agent/paths.js";
+import { allowGatewayUser, enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
+import { openSession } from "../src/agent/sessions.js";
+import { claimExchangeMessage, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
+import { createTask, readTask } from "../src/agent/tasks.js";
+import { readJsonl } from "../src/lib/jsonl.js";
+import { acquireDashboardLock, dashboardOnce, releaseDashboardLock } from "../src/agent/dashboard/bot.js";
+import { initializeDashboardCursor } from "../src/agent/dashboard/feed.js";
+import { buildDashboardService } from "../src/agent/service.js";
+
+test("dashboard feed cursor sends new session, exchange, and gate events once", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-feed-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", exchange_notify_chat_id: "456" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  initializeDashboardCursor(agentHome);
+
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 6,
+    budgetMinutes: 20,
+    topic: "U2 dashboard feed token unique session opening.",
+  });
+  const message = submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    sessionId: session.session_id,
+    text: "U2_DASHBOARD_FEED_MESSAGE_TOKEN request body",
+  });
+  claimExchangeMessage({ agentHome, id: message.id, agent: "opus" });
+  replyExchangeMessage({
+    agentHome,
+    id: message.id,
+    agent: "opus",
+    text: "U2_DASHBOARD_FEED_REPLY_TOKEN response body",
+  });
+  const task = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U2_DASHBOARD_GATE_TOKEN approve this edit gate.",
+    mode: "edit",
+  });
+
+  const firstCalls = [];
+  const first = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(firstCalls, [[]]),
+  });
+  const sentTexts = firstCalls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+
+  assert.equal(first.feed.length, 4);
+  assert.equal(sentTexts.some((text) => /開場/.test(text)), true);
+  assert.equal(sentTexts.some((text) => /U2_DASHBOARD_FEED_MESSAGE_TOKEN/.test(text)), true);
+  assert.equal(sentTexts.some((text) => /U2_DASHBOARD_FEED_REPLY_TOKEN/.test(text)), true);
+  assert.equal(sentTexts.some((text) => text.includes(task.id) && /U2_DASHBOARD_GATE_TOKEN/.test(text)), true);
+  assert.equal(firstCalls.find((call) => call.body.reply_markup)?.body.reply_markup.inline_keyboard[0][0].callback_data, `gate:approve:${task.id}`);
+
+  const secondCalls = [];
+  const second = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(secondCalls, [[]]),
+  });
+  assert.equal(second.feed.length, 0);
+  assert.equal(secondCalls.filter((call) => call.method === "sendMessage").length, 0);
+
+  const restartCalls = [];
+  const restart = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(restartCalls, [[]]),
+  });
+  assert.equal(restart.feed.length, 0);
+  assert.equal(restartCalls.filter((call) => call.method === "sendMessage").length, 0);
+});
+
+test("dashboard /session command opens a real session ledger row", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-session-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const calls = [];
+
+  const result = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[telegramMessageUpdate({
+      updateId: 10,
+      fromId: 123,
+      chatId: 456,
+      text: "/session codex,opus budget=3/9 write=codex -- U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.",
+    })]]),
+  });
+  const rows = readJsonl(agentPaths(agentHome).sessions);
+  const reply = calls.find((call) => call.method === "sendMessage").body.text;
+
+  assert.equal(result.updates, 1);
+  assert.match(reply, /session #[a-f0-9]{6} 開場/);
+  assert.equal(rows[0].event, "session_opened");
+  assert.equal(rows[0].topic, "U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.");
+  assert.deepEqual(rows[0].write_access, ["codex"]);
+  assert.deepEqual(rows[0].budget, { max_messages: 3, max_minutes: 9 });
+});
+
+test("dashboard rejects non-owner messages and strict parser failures", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-deny-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramMessageUpdate({ updateId: 20, fromId: 999, chatId: 456, text: "/sessions" }),
+      telegramMessageUpdate({ updateId: 21, fromId: 123, chatId: 456, text: "/session codex,opus missing separator" }),
+      telegramMessageUpdate({ updateId: 22, fromId: 123, chatId: 456, text: "old v1 text" }),
+    ]]),
+  });
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+
+  assert.equal(sent[0], "唯讀");
+  assert.match(sent[1], /^用法:\/session/);
+  assert.equal(sent[2], "這是 v3 看板,指令:/session /sessions /kill /agents");
+  assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
+});
+
+test("dashboard rejects gateway-only users for commands and gate callbacks", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-gateway-only-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  allowGatewayUser(agentHome, "999");
+  const task = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U2_DASHBOARD_GATEWAY_ONLY_TOKEN edit task.",
+    mode: "edit",
+  });
+  const before = readTask(agentHome, task.id);
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramMessageUpdate({ updateId: 25, fromId: 999, chatId: 456, text: "/sessions" }),
+      telegramCallbackUpdate({ updateId: 26, fromId: 999, chatId: 456, data: `gate:approve:${task.id}` }),
+    ]]),
+  });
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+  const after = readTask(agentHome, task.id);
+
+  assert.equal(sent[0], "唯讀");
+  assert.equal(answers[0], "唯讀");
+  assert.equal(after.status, before.status);
+  assert.equal(after.approval, before.approval);
+});
+
+test("dashboard gate callbacks approve tasks and reject non-owner callbacks", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-callback-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  const approved = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U2_DASHBOARD_CALLBACK_APPROVE_TOKEN edit task.",
+    mode: "edit",
+  });
+  const rejected = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U2_DASHBOARD_CALLBACK_REJECT_TOKEN edit task.",
+    mode: "edit",
+  });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramCallbackUpdate({ updateId: 30, fromId: 999, chatId: 456, data: `gate:approve:${approved.id}` }),
+      telegramCallbackUpdate({ updateId: 31, fromId: 123, chatId: 456, data: `gate:approve:${approved.id}` }),
+      telegramCallbackUpdate({ updateId: 32, fromId: 123, chatId: 456, data: `gate:reject:${rejected.id}` }),
+    ]]),
+  });
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+
+  assert.equal(answers[0], "唯讀");
+  assert.match(answers[1], /已放行/);
+  assert.match(answers[2], /已拒絕/);
+  assert.equal(readTask(agentHome, approved.id).approval, "approved");
+  assert.equal(readTask(agentHome, rejected.id).approval, "rejected");
+});
+
+test("dashboard service generator writes only a unit and dashboard lock refuses a live second owner", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-service-");
+  const built = buildDashboardService({ agentHome, repoDir: process.cwd(), longPollSeconds: 7 });
+
+  assert.equal(built.unit_name, "codex-agent-dashboard.service");
+  assert.match(built.unit, /dashboard-bridge/);
+  assert.match(built.unit, /--long-poll-seconds 7/);
+  assert.doesNotMatch(built.unit, /systemctl/);
+
+  const lockPath = acquireDashboardLock(agentHome);
+  assert.equal(lockPath, agentPaths(agentHome).dashboardLock);
+  assert.throws(() => acquireDashboardLock(agentHome), /already running/);
+  releaseDashboardLock(agentHome);
+  assert.equal(fs.existsSync(lockPath), false);
+});
+
+test("dashboard CLI exposes dashboard-once and service-write", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-cli-");
+  const serviceDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-agent-dashboard-service-dir-"));
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (value) => lines.push(String(value));
+  try {
+    await runAgentCli([
+      "dashboard-service-write",
+      "--state", agentHome,
+      "--dir", serviceDir,
+      "--repo", process.cwd(),
+      "--long-poll-seconds", "8",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+  const result = JSON.parse(lines[0]);
+
+  assert.equal(result.unit_name, "codex-agent-dashboard.service");
+  assert.equal(fs.existsSync(path.join(serviceDir, "codex-agent-dashboard.service")), true);
+  assert.equal(fs.existsSync(path.join(serviceDir, "codex-agent-dashboard.timer")), false);
+});
+
+function makeAgentHome(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function telegramMessageUpdate({ updateId = 1, fromId, chatId, text }) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: 10,
+      from: { id: fromId },
+      chat: { id: chatId },
+      text,
+    },
+  };
+}
+
+function telegramCallbackUpdate({ updateId = 1, fromId, chatId, data }) {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `cb_${updateId}`,
+      from: { id: fromId },
+      data,
+      message: { message_id: 10, chat: { id: chatId } },
+    },
+  };
+}
+
+function sequencedTelegramFetch(calls, updateBatches) {
+  let index = 0;
+  return async (url, options) => {
+    const method = String(url).split("/").at(-1);
+    const body = JSON.parse(options.body);
+    calls.push({ method, body });
+    if (method === "getUpdates") {
+      const result = updateBatches[Math.min(index, updateBatches.length - 1)] || [];
+      index += 1;
+      return { ok: true, json: async () => ({ ok: true, result }) };
+    }
+    return { ok: true, json: async () => ({ ok: true, result: { message_id: 99 } }) };
+  };
+}

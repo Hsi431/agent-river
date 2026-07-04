@@ -20,7 +20,7 @@ import { codexReplyOnce } from "./codex-reply.js";
 import { telegramCodexLoop, telegramCodexLoopDryRun, telegramCodexOnce } from "./telegram-codex.js";
 import { telegramCodexBridge, telegramCodexBridgeStatus } from "./telegram-codex-bridge.js";
 import { approveAndSendReply, approveReply, listPendingReplyApprovals, rejectReply } from "./reply-approval.js";
-import { buildTelegramCodexService, telegramCodexServiceStatus, writeTelegramCodexService, buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus } from "./service.js";
+import { buildTelegramCodexService, telegramCodexServiceStatus, writeTelegramCodexService, buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus, buildDashboardService, writeDashboardService, dashboardServiceStatus } from "./service.js";
 import {
   claimExchangeMessage,
   exchangeStatus,
@@ -41,6 +41,7 @@ import { resolveAgentHome } from "./paths.js";
 import { allowGatewayUser, denyGatewayUser, disableExchangeAgent, enableExchangeAgent, getSafetyStatus, getTelegramCodexPolicy, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "./safety.js";
 import { handleTelegramUpdate, parseTelegramUpdateJson, pollTelegramOnce } from "./telegram.js";
 import { getDispatchApproval, listDispatchApprovals } from "./dispatch.js";
+import { dashboardBridge, dashboardOnce } from "./dashboard/bot.js";
 
 export async function runAgentCli(argv) {
   if (argv[0] === "--help" || argv[0] === "-h") {
@@ -49,7 +50,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "channel", "chat-id", "codex-runner-model", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "initiator", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "participants", "per-chat-interval-seconds", "repo", "request", "require-approval", "session", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "channel", "chat-id", "codex-runner-model", "context-max-chars", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "initiator", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "participants", "per-chat-interval-seconds", "repo", "request", "require-approval", "session", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
@@ -388,6 +389,39 @@ export async function runAgentCli(argv) {
     }
     case "telegram-codex-bridge-status":
       return printResult(telegramCodexBridgeStatus(agentHome));
+    case "dashboard-once":
+      return printResult(await dashboardOnce({
+        agentHome,
+        transport: args.transport || "fetch",
+        longPollSeconds: args["long-poll-seconds"],
+        dashboardChatId: args["dashboard-chat-id"],
+      }));
+    case "dashboard-bridge": {
+      const controller = new AbortController();
+      const onSignal = () => controller.abort();
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
+      try {
+        return printResult(await dashboardBridge({
+          agentHome,
+          transport: args.transport || "fetch",
+          longPollSeconds: args["long-poll-seconds"],
+          maxCycles: args["max-cycles"],
+          sleepSeconds: args["sleep-seconds"],
+          dashboardChatId: args["dashboard-chat-id"],
+          abortSignal: controller.signal,
+        }));
+      } finally {
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+      }
+    }
+    case "dashboard-service-print":
+      return printResult(buildDashboardService({ agentHome, repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
+    case "dashboard-service-write":
+      return printResult(writeDashboardService({ agentHome, dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
+    case "dashboard-service-status":
+      return printResult(dashboardServiceStatus({ agentHome, dir: args.dir, repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
     case "help":
     case undefined:
       return printHelp();
@@ -473,6 +507,11 @@ function printHelp() {
   telegram-codex-service-write --dir ~/.config/systemd/user [--mode timer|bridge] [--long-poll-seconds N]
   telegram-codex-service-status [--dir DIR] [--mode timer|bridge]
   telegram-codex-approval-send --id approval_id [--transport fetch|curl]
+  dashboard-once [--transport fetch|curl] [--long-poll-seconds N] [--dashboard-chat-id ID]
+  dashboard-bridge [--transport fetch|curl] [--long-poll-seconds N] [--max-cycles N] [--sleep-seconds N] [--dashboard-chat-id ID]
+  dashboard-service-print [--repo /path] [--long-poll-seconds N]
+  dashboard-service-write --dir ~/.config/systemd/user [--repo /path] [--long-poll-seconds N]
+  dashboard-service-status [--dir DIR] [--repo /path] [--long-poll-seconds N]
 
 Default state: ~/.codex/agent. Use --state .local-agent-state for development smoke tests.
 Phase D supports local gateway text commands (status, submit, run, approve, reject) and single-shot Telegram polling via TELEGRAM_BOT_TOKEN.`);
