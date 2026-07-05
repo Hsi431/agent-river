@@ -194,10 +194,6 @@ function handleSayCommand(agentHome, raw) {
   if (!session || session.state !== "active") {
     return "session 已收場";
   }
-  const remaining = Number(session.budget?.max_messages) - Number(session.messages_used || 0);
-  if (remaining < session.participants.length) {
-    return `預算不足:剩 ${Math.max(0, remaining)} 封,需要 ${session.participants.length} 封`;
-  }
   const text = match[2].trim();
   let current = session;
   let sent = 0;

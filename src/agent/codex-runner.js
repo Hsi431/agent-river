@@ -75,6 +75,7 @@ function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox, model, time
     // never visible in a process listing (`ps`).
     const args = [
       "exec",
+      "-C", cwd || process.cwd(),
       "--sandbox", sandbox || "read-only",
       "--skip-git-repo-check",
       "-o", outFile,

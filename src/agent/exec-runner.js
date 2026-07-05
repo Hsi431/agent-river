@@ -16,6 +16,7 @@ import { DISPATCH_CHANNEL, dispatchTargetAllowlist } from "./dispatch.js";
 import { getSession, isSessionExchangeEligible } from "./sessions.js";
 import { listRegisteredAgents } from "./registry.js";
 import { terminateGroup } from "./v2/kill.js";
+import { resolveMessageRepoBinding } from "./runner-repo.js";
 
 const MAX_STDOUT_BYTES = 64 * 1024;
 const MAX_STDERR_BYTES = 4096;
@@ -76,12 +77,15 @@ export function pickEligibleExecMessage(agentHome, agentName, { now = Date.now()
   return eligible[0] || null;
 }
 
-export function buildExecEnvelope({ agentHome, message }) {
+export function buildExecEnvelope({ agentHome, message, repoPromptLine = null }) {
   const session = message.session_id ? getSession(agentHome, message.session_id) : null;
   return `${JSON.stringify({
     sender: String(message.from || ""),
     session_id: message.session_id || null,
     session_topic: session?.topic || null,
+    repo_status: repoPromptLine || (message.repo
+      ? `本 session 綁定 repo:${message.repo}`
+      : "本對話未綁定任何 repo;不要假設題目與你目前所在的 codebase 相關,依題目本身回答"),
     text: String(message.text || ""),
   })}\n`;
 }
@@ -185,10 +189,11 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
   }
 
   const attempt = priorAttempts + 1;
+  const repoBinding = resolveMessageRepoBinding({ message, repoDir });
   const run = await runExecCommand({
     command: agent.exec_command,
-    cwd: resolveExecCwd({ agent, message, repoDir }),
-    stdinText: buildExecEnvelope({ agentHome, message }),
+    cwd: resolveExecCwd({ agent, repoBinding }),
+    stdinText: buildExecEnvelope({ agentHome, message, repoPromptLine: repoBinding.promptLine }),
     timeoutSeconds: agent.exec_timeout_seconds,
     spawnImpl,
   });
@@ -214,7 +219,7 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
     const relay = reply.session_id
       ? relaySessionReply({ agentHome, message, reply })
       : null;
-    recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome: "replied", now });
+    recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome: "replied", now, repoFallback: repoBinding.repoFallback });
     return summary(agent.name, {
       ran: true,
       reason: "replied",
@@ -229,7 +234,7 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
 
   safeRelease(agentHome, message.id, agent.name);
   const outcome = run.timedOut ? "timed_out_released" : "failed_released";
-  recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome, now, error: runError(run) });
+  recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome, now, error: runError(run), repoFallback: repoBinding.repoFallback });
   return summary(agent.name, {
     ran: true,
     reason: outcome,
@@ -265,15 +270,12 @@ function recordFirstSkippedExecSessionMessage(agentHome, paths, agentName, now) 
   return { ran: false, reason, message_id: skipped.message.id };
 }
 
-function resolveExecCwd({ agent, message, repoDir }) {
+function resolveExecCwd({ agent, repoBinding }) {
   if (agent.exec_cwd) {
     return agent.exec_cwd;
   }
-  if (message.repo) {
-    return String(message.repo);
-  }
-  if (repoDir) {
-    return String(repoDir);
+  if (repoBinding?.cwd) {
+    return repoBinding.cwd;
   }
   return os.homedir();
 }
@@ -288,13 +290,14 @@ function failureAttemptsFor(paths, agentName, messageId) {
     .length;
 }
 
-function recordExecDispatch(paths, { agent, messageId, attempt, outcome, now, error = null }) {
+function recordExecDispatch(paths, { agent, messageId, attempt, outcome, now, error = null, repoFallback = null }) {
   appendJsonl(paths.execRunnerDispatch, {
     agent,
     message_id: messageId,
     attempt,
     outcome,
     ...(error ? { error: sanitizeError(error) } : {}),
+    ...(repoFallback ? { repo_fallback: repoFallback } : {}),
     created_at: new Date(now).toISOString(),
   });
 }

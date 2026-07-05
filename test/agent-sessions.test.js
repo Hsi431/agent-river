@@ -120,7 +120,7 @@ test("session exchange submit and reply both attach session_id and consume messa
   assert.equal(folded.closed_reason, "exhausted");
 });
 
-test("owner kickoff broadcasts topic to every participant and consumes session budget", async () => {
+test("owner kickoff broadcasts topic to every participant without consuming session budget", async () => {
   const agentHome = makeAgentHome("u8-session-kickoff-");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
   const session = await openSession({
@@ -136,10 +136,10 @@ test("owner kickoff broadcasts topic to every participant and consumes session b
   const ledger = readJsonl(agentPaths(agentHome).sessions).filter((row) => row.event === "session_message");
 
   assert.equal(kickoff.sent, 2);
-  assert.equal(kickoff.session.messages_used, 2);
+  assert.equal(kickoff.session.messages_used, 0);
   assert.deepEqual(messages.map((row) => row.from), ["owner", "owner"]);
   assert.deepEqual(messages.map((row) => row.to), ["codex", "opus"]);
-  assert.deepEqual(ledger.map((row) => [row.from, row.to]), [["owner", "codex"], ["owner", "opus"]]);
+  assert.deepEqual(ledger, []);
 });
 
 test("CLI session-open kicks off owner sessions by default and --no-kickoff disables it", async () => {
@@ -163,7 +163,7 @@ test("CLI session-open kicks off owner sessions by default and --no-kickoff disa
   const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
 
   assert.deepEqual(opened.kickoff, { sent: 2 });
-  assert.equal(opened.session.messages_used, 2);
+  assert.equal(opened.session.messages_used, 0);
   assert.equal(quiet.kickoff, null);
   assert.equal(quiet.session.messages_used, 0);
   assert.equal(messages.length, 2);
@@ -212,7 +212,41 @@ test("session relay forwards a runner reply to the next participant", async () =
   assert.equal(relayed.from, "codex");
   assert.equal(relayed.to, "opus");
   assert.equal(relayed.text, "U8 codex reply for relay.");
-  assert.equal(folded.messages_used, 4);
+  assert.equal(folded.messages_used, 1);
+});
+
+test("session ping-pong budget counts agent replies but not owner kickoff or relay submit", async () => {
+  const agentHome = makeAgentHome("u12-session-ping-pong-budget-");
+  enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 6,
+    topic: "U12 ping pong budget counts only agent replies.",
+  });
+  kickoffSession({ agentHome, session });
+  assert.equal(getSession(agentHome, session.session_id).messages_used, 0);
+
+  const codexRun = await runCodexExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    codexRunnerImpl: async () => ({ ok: true, text: "U12 codex reply." }),
+  });
+  assert.equal(codexRun.relay_skipped, null);
+  assert.equal(getSession(agentHome, session.session_id).messages_used, 1);
+
+  const opusRun = await runExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    settingsPath: SETTINGS_OK,
+    spawnImpl: async () => ({ ok: true, text: "U12 opus reply." }),
+  });
+
+  assert.equal(opusRun.relay_skipped, null);
+  assert.equal(getSession(agentHome, session.session_id).messages_used, 2);
 });
 
 test("session relay stops when the reply exhausts the message budget", async () => {
@@ -224,7 +258,7 @@ test("session relay stops when the reply exhausts the message budget", async () 
     agentHome,
     initiator: "owner",
     participants: "codex,opus",
-    budgetMessages: 2,
+    budgetMessages: 1,
     topic: "U8 budget exhaustion relay stop.",
   });
   const message = submitExchangeMessage({
@@ -247,7 +281,7 @@ test("session relay stops when the reply exhausts the message budget", async () 
   assert.equal(result.relay_message_id, null);
   assert.equal(result.relay_skipped, "budget_exhausted");
   assert.equal(folded.state, "exhausted");
-  assert.equal(folded.messages_used, 2);
+  assert.equal(folded.messages_used, 1);
 });
 
 test("session submit rejects non-participants with a stable error code", async () => {

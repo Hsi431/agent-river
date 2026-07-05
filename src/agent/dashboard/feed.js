@@ -131,6 +131,7 @@ function sessionEvents(agentHome, file, cursor, skipOpenedSessionIds) {
 function exchangeMessageEvents(agentHome, file, cursor) {
   return readJsonlSince(file, cursor.ledgers.exchange_messages)
     .filter((message) => message.session_id)
+    .filter((message) => message.from !== "owner")
     .map((message) => ({
       kind: "exchange",
       created_at: message.created_at || "",

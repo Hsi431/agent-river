@@ -14,6 +14,7 @@ import {
 } from "./exchange.js";
 import { isSessionExchangeEligible } from "./sessions.js";
 import { createDispatchApproval, DISPATCH_CHANNEL, parseDispatchProposal } from "./dispatch.js";
+import { resolveMessageRepoBinding } from "./runner-repo.js";
 
 // Opus-side exchange auto-runner (v1). Single-shot: pick at most one eligible
 // message addressed to opus over Telegram from codex, claim it in Node, then
@@ -247,7 +248,8 @@ export async function runExchangeRunnerOnce({
     const timeoutSeconds = Number(policy.exchange_runner_timeout_seconds);
     const chatId = message.chat_id || null;
     const sessionId = chatId ? readRunnerSession(paths, chatId) : null;
-    const invocation = buildClaudeInvocation({ repoDir, agentHome, msgId: message.id, model, settingsPath, timeoutSeconds, sessionId });
+    const repoBinding = resolveMessageRepoBinding({ message, repoDir });
+    const invocation = buildClaudeInvocation({ repoDir: repoBinding.cwd, agentHome, msgId: message.id, model, settingsPath, timeoutSeconds, sessionId, repoPromptLine: repoBinding.promptLine });
     const logPath = path.join(paths.exchangeRunnerLogsDir, `${message.id}.attempt-${attempt}.log`);
 
     let spawnResult;
@@ -294,7 +296,7 @@ export async function runExchangeRunnerOnce({
           now,
         })
         : null;
-      recordDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now });
+      recordDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now, repoFallback: repoBinding.repoFallback });
       return summary({
         ran: true,
         reason: "replied",
@@ -311,7 +313,7 @@ export async function runExchangeRunnerOnce({
 
     if (attempt < maxAttempts) {
       safeRelease(agentHome, message.id);
-      recordDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now, error: spawnError(spawnResult) });
+      recordDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now, error: spawnError(spawnResult), repoFallback: repoBinding.repoFallback });
       return summary({
         ran: true,
         reason: "failed_released",
@@ -332,7 +334,7 @@ export async function runExchangeRunnerOnce({
       blockedOk = false;
       safeRelease(agentHome, message.id);
     }
-    recordDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now, error: spawnError(spawnResult) });
+    recordDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now, error: spawnError(spawnResult), repoFallback: repoBinding.repoFallback });
     return summary({
       ran: true,
       reason: blockedOk ? "blocked_terminal" : "blocked_reply_failed",
@@ -348,10 +350,11 @@ export async function runExchangeRunnerOnce({
 
 // Pure construction of the headless Claude invocation. Only the message id and
 // fixed boilerplate go into argv — never the raw message text.
-export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settingsPath, maxTurns = 40, sessionId = null }) {
+export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settingsPath, maxTurns = 40, sessionId = null, repoPromptLine = null }) {
   const prompt = [
     `You are the Claude agent for Agent River. Do not call yourself Opus unless the owner explicitly asks about the legacy @opus alias.`,
     `Telegram entrypoints: @claude is the preferred user-facing name; @opus is a backwards-compatible alias for the same Claude agent.`,
+    repoPromptLine || `本 session 綁定 repo:${repoDir}`,
     `Exchange message ${msgId} is ALREADY claimed. Do NOT claim, release, reply, or create new exchange messages.`,
     `Step 1 — read the thread:`,
     `  node bin/codex-agent.js exchange-thread --state ${agentHome} --id ${msgId}`,
@@ -476,13 +479,14 @@ function dispatchCountForDay(paths, now) {
     .length;
 }
 
-function recordDispatch(paths, { messageId, attempt, outcome, model, now, error = null }) {
+function recordDispatch(paths, { messageId, attempt, outcome, model, now, error = null, repoFallback = null }) {
   appendJsonl(paths.exchangeRunnerDispatch, {
     message_id: messageId,
     attempt,
     outcome,
     model: model || null,
     ...(error ? { error: sanitizeError(error) } : {}),
+    ...(repoFallback ? { repo_fallback: repoFallback } : {}),
     created_at: new Date(now).toISOString(),
   });
 }

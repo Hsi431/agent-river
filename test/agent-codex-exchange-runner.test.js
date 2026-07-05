@@ -9,6 +9,8 @@ import { agentPaths } from "../src/agent/paths.js";
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 import { DISPATCH_CHANNEL } from "../src/agent/dispatch.js";
+import { submitExchangeMessage } from "../src/agent/exchange.js";
+import { openSession } from "../src/agent/sessions.js";
 
 const REPO = "/home/fnata_claw/codex-memory-river";
 
@@ -328,14 +330,17 @@ test("codex runner ignores a message from an untrusted sender (§F2)", () => {
 // round-4 (Codex finding #3): the policy timeout actually reaches codex exec.
 test("realCodexRunner threads timeoutMs to codex exec, defaulting to 120s (§F3)", async () => {
   let capturedTimeout = null;
+  let capturedArgs = null;
   const execImpl = (_file, _args, opts, cb) => {
     capturedTimeout = opts.timeout;
+    capturedArgs = _args;
     cb(null, "done", "");
     return { stdin: { on() {}, write() {}, end() {} } };
   };
 
-  await realCodexRunner({ prompt: "hello", execFileImpl: execImpl, timeoutMs: 5000 });
+  await realCodexRunner({ prompt: "hello", execFileImpl: execImpl, cwd: "/tmp/u12-codex-cwd", timeoutMs: 5000 });
   assert.equal(capturedTimeout, 5000, "explicit timeoutMs must reach the exec options");
+  assert.equal(capturedArgs[capturedArgs.indexOf("-C") + 1], "/tmp/u12-codex-cwd", "cwd must also reach codex exec -C");
 
   await realCodexRunner({ prompt: "hello", execFileImpl: execImpl });
   assert.equal(capturedTimeout, 120000, "default must be the 120s constant");
@@ -392,3 +397,112 @@ test("codex runner prompt never contains raw message text", async () => {
   assert.ok(capturedPrompt.includes("msg_noleak"));
   assert.equal(capturedPrompt.includes(SECRET_TEXT), false);
 });
+
+test("codex runner uses session message repo as cwd and marks bound repo in prompt", async () => {
+  const agentHome = makeAgentHome("u12-codex-runner-repo-");
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u12-codex-repo-")));
+  enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    topic: "U12 bound repo reaches codex runner cwd.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "opus",
+    to: "codex",
+    sessionId: session.session_id,
+    repo,
+    text: "U12 codex repo cwd check.",
+  });
+  let captured = null;
+
+  await runCodexExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    codexRunnerImpl: async ({ prompt, cwd }) => {
+      captured = { prompt, cwd };
+      return { ok: true, text: "Done." };
+    },
+  });
+
+  assert.equal(captured.cwd, repo);
+  assert.match(captured.prompt, new RegExp(`本 session 綁定 repo:${escapeRegExp(repo)}`));
+});
+
+test("codex runner adds unbound repo warning when message has no repo", async () => {
+  const agentHome = makeAgentHome("u12-codex-runner-unbound-");
+  enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    topic: "U12 unbound repo warning reaches codex prompt.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "opus",
+    to: "codex",
+    sessionId: session.session_id,
+    text: "U12 codex unbound repo check.",
+  });
+  let captured = null;
+
+  await runCodexExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    codexRunnerImpl: async ({ prompt, cwd }) => {
+      captured = { prompt, cwd };
+      return { ok: true, text: "Done." };
+    },
+  });
+
+  assert.equal(captured.cwd, REPO);
+  assert.match(captured.prompt, /未綁定任何 repo/);
+});
+
+test("codex runner falls back to repoDir and logs repo_fallback when session repo is invalid", async () => {
+  const agentHome = makeAgentHome("u12-codex-runner-repo-fallback-");
+  const invalidRepo = path.join(agentHome, "missing-repo");
+  enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    topic: "U12 invalid repo falls back for codex runner.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "opus",
+    to: "codex",
+    sessionId: session.session_id,
+    repo: invalidRepo,
+    text: "U12 codex invalid repo check.",
+  });
+  let cwd = null;
+
+  await runCodexExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    codexRunnerImpl: async ({ cwd: runCwd }) => {
+      cwd = runCwd;
+      return { ok: true, text: "Done." };
+    },
+  });
+  const dispatch = readJsonl(agentPaths(agentHome).codexExchangeRunnerDispatch).at(-1);
+
+  assert.equal(cwd, REPO);
+  assert.equal(dispatch.repo_fallback.requested, invalidRepo);
+  assert.equal(dispatch.repo_fallback.fallback, REPO);
+});
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

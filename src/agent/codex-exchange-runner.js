@@ -15,6 +15,7 @@ import {
 import { isSessionExchangeEligible } from "./sessions.js";
 import { DISPATCH_CHANNEL, dispatchTargetAllowlist } from "./dispatch.js";
 import { realCodexRunner } from "./codex-runner.js";
+import { resolveMessageRepoBinding } from "./runner-repo.js";
 
 // Codex-side exchange auto-runner (v1). Single-shot: pick at most one eligible
 // message addressed to codex, claim it in Node, invoke codex exec via
@@ -83,13 +84,13 @@ export async function runCodexExchangeRunnerOnce({
     const attempt = priorAttempts + 1;
     const model = policy.codex_runner_model || null;
     const timeoutSeconds = Number(policy.exchange_runner_timeout_seconds) || 600;
-    const effectiveRepoDir = resolveRepo(message, policy, repoDir);
-    const prompt = buildCodexPrompt({ agentHome, msgId: message.id, repoDir: effectiveRepoDir });
+    const repoBinding = resolveMessageRepoBinding({ message, repoDir });
+    const prompt = buildCodexPrompt({ agentHome, msgId: message.id, repoDir: repoBinding.cwd, repoPromptLine: repoBinding.promptLine });
     const logPath = path.join(paths.codexExchangeRunnerLogsDir, `${message.id}.attempt-${attempt}.log`);
 
     let runResult;
     try {
-      runResult = await codexRunnerImpl({ prompt, cwd: effectiveRepoDir, agentHome, timeoutSeconds, logPath, execFileImpl: execFile });
+      runResult = await codexRunnerImpl({ prompt, cwd: repoBinding.cwd, agentHome, timeoutSeconds, logPath, execFileImpl: execFile });
     } catch (error) {
       runResult = { ok: false, text: "", error: sanitizeError(error.message) };
     }
@@ -117,7 +118,7 @@ export async function runCodexExchangeRunnerOnce({
       const relay = reply.session_id
         ? relaySessionReply({ agentHome, message, reply })
         : null;
-      recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now });
+      recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now, repoFallback: repoBinding.repoFallback });
       return summary({
         ran: true,
         reason: "replied",
@@ -132,7 +133,7 @@ export async function runCodexExchangeRunnerOnce({
 
     if (attempt < maxAttempts) {
       safeCodexRelease(agentHome, message.id);
-      recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now, error: runError(runResult) });
+      recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now, error: runError(runResult), repoFallback: repoBinding.repoFallback });
       return summary({
         ran: true,
         reason: "failed_released",
@@ -152,7 +153,7 @@ export async function runCodexExchangeRunnerOnce({
       blockedOk = false;
       safeCodexRelease(agentHome, message.id);
     }
-    recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now, error: runError(runResult) });
+    recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now, error: runError(runResult), repoFallback: repoBinding.repoFallback });
     return summary({
       ran: true,
       reason: blockedOk ? "blocked_terminal" : "blocked_reply_failed",
@@ -191,9 +192,10 @@ async function defaultCodexRunner({ prompt, cwd, agentHome, timeoutSeconds, logP
 // Build the review/Q&A prompt for codex. Only the message id and fixed
 // boilerplate go into the prompt — never raw message text. Codex reads the
 // message via the exchange-thread command.
-export function buildCodexPrompt({ agentHome, msgId, repoDir }) {
+export function buildCodexPrompt({ agentHome, msgId, repoDir, repoPromptLine = null }) {
   return [
     `You are the Codex agent for Agent River.`,
+    repoPromptLine || `本 session 綁定 repo:${repoDir}`,
     `Exchange message ${msgId} is ALREADY claimed. Do NOT claim, release, reply, or create new exchange messages.`,
     `Step 1 — read the thread:`,
     `  node bin/codex-agent.js exchange-thread --state ${agentHome} --id ${msgId}`,
@@ -266,13 +268,14 @@ function codexDispatchCountForDay(paths, now) {
     .length;
 }
 
-function recordCodexDispatch(paths, { messageId, attempt, outcome, model, now, error = null }) {
+function recordCodexDispatch(paths, { messageId, attempt, outcome, model, now, error = null, repoFallback = null }) {
   appendJsonl(paths.codexExchangeRunnerDispatch, {
     message_id: messageId,
     attempt,
     outcome,
     model: model || null,
     ...(error ? { error: sanitizeError(error) } : {}),
+    ...(repoFallback ? { repo_fallback: repoFallback } : {}),
     created_at: new Date(now).toISOString(),
   });
 }
@@ -337,17 +340,6 @@ function releaseCodexRunnerLock(agentHome) {
       // best-effort
     }
   }
-}
-
-function resolveRepo(message, policy, fallbackRepoDir) {
-  // If the message names a repo, use it; otherwise use the policy default or fallback.
-  if (message.repo && typeof message.repo === "string" && message.repo.trim()) {
-    return message.repo.trim();
-  }
-  if (policy.default_repo && typeof policy.default_repo === "string" && policy.default_repo.trim()) {
-    return policy.default_repo.trim();
-  }
-  return fallbackRepoDir;
 }
 
 function sanitizeError(message) {

@@ -7,7 +7,7 @@ import { runAgentCli } from "../src/agent/cli.js";
 import { dashboardOnce } from "../src/agent/dashboard/bot.js";
 import { initializeDashboardCursor } from "../src/agent/dashboard/feed.js";
 import { kickoffSession, submitExchangeMessage } from "../src/agent/exchange.js";
-import { runExecRunnerOnce, pickEligibleExecMessage } from "../src/agent/exec-runner.js";
+import { runExecRunnerOnce, pickEligibleExecMessage, buildExecEnvelope } from "../src/agent/exec-runner.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { openSession } from "../src/agent/sessions.js";
@@ -159,6 +159,74 @@ test("exec runner stops picking a message after two failed attempts", async () =
   assert.match(dispatch[0].error, /exit 2/);
   assert.match(dispatch[1].error, /exit 2/);
   assert.equal(claims.at(-1).status, "released");
+});
+
+test("exec runner uses session message repo as subprocess cwd", async () => {
+  const agentHome = makeAgentHome("u12-exec-repo-cwd-");
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u12-exec-repo-")));
+  await approveExecAgent(agentHome, "pwdbot", "pwd");
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,pwdbot",
+    budgetMessages: 6,
+    topic: "U12 exec runner should use bound repo cwd.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "pwdbot",
+    sessionId: session.session_id,
+    repo,
+    text: "U12 exec repo cwd check.",
+  });
+
+  const result = await runExecRunnerOnce({ agentHome, repoDir: process.cwd() });
+  const reply = readJsonl(agentPaths(agentHome).exchangeReplies)[0];
+
+  assert.equal(result.results[0].reason, "replied");
+  assert.equal(reply.text.trim(), repo);
+});
+
+test("exec runner envelope warns when session message has no bound repo", () => {
+  const envelope = JSON.parse(buildExecEnvelope({
+    agentHome: makeAgentHome("u12-exec-unbound-envelope-"),
+    message: {
+      from: "codex",
+      text: "U12 exec unbound prompt check.",
+    },
+  }));
+
+  assert.match(envelope.repo_status, /未綁定任何 repo/);
+});
+
+test("exec runner falls back to repoDir and logs repo_fallback when session repo is invalid", async () => {
+  const agentHome = makeAgentHome("u12-exec-repo-fallback-");
+  const invalidRepo = path.join(agentHome, "missing-repo");
+  await approveExecAgent(agentHome, "pwdfallback", "pwd");
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,pwdfallback",
+    budgetMessages: 6,
+    topic: "U12 exec runner should fallback invalid repo.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "pwdfallback",
+    sessionId: session.session_id,
+    repo: invalidRepo,
+    text: "U12 exec invalid repo check.",
+  });
+
+  await runExecRunnerOnce({ agentHome, repoDir: process.cwd() });
+  const reply = readJsonl(agentPaths(agentHome).exchangeReplies)[0];
+  const dispatch = readJsonl(agentPaths(agentHome).execRunnerDispatch).at(-1);
+
+  assert.equal(reply.text.trim(), process.cwd());
+  assert.equal(dispatch.repo_fallback.requested, invalidRepo);
+  assert.equal(dispatch.repo_fallback.fallback, process.cwd());
 });
 
 test("exec runner service generator writes a 90 second timer unit", () => {

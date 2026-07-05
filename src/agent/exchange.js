@@ -39,7 +39,7 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     created_at: now,
   };
   appendJsonl(agentPaths(agentHome).exchangeMessages, message);
-  if (session) {
+  if (session && shouldConsumeSessionSubmitBudget({ from: sender, channel: message.channel })) {
     consumeBudget({
       agentHome,
       id: session.session_id,
@@ -51,6 +51,10 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     });
   }
   return message;
+}
+
+function shouldConsumeSessionSubmitBudget({ from, channel }) {
+  return String(from || "") !== "owner" && String(channel || "") !== "session-relay";
 }
 
 export function kickoffSession({ agentHome, session, channel = "session", threadId = null, chatId = null } = {}) {

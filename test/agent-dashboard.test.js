@@ -85,6 +85,41 @@ test("dashboard feed cursor sends new session, exchange, and gate events once", 
   assert.equal(restartCalls.filter((call) => call.method === "sendMessage").length, 0);
 });
 
+test("dashboard feed suppresses owner session submits but still sends agent session messages", async () => {
+  const agentHome = makeAgentHome("u12-dashboard-feed-owner-noise-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", exchange_notify_chat_id: "456" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  initializeDashboardCursor(agentHome);
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 6,
+    budgetMinutes: 20,
+    topic: "U12 dashboard feed suppresses owner session mail.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "owner",
+    to: "codex",
+    sessionId: session.session_id,
+    text: "U12_OWNER_FEED_SHOULD_NOT_SEND",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    sessionId: session.session_id,
+    text: "U12_AGENT_FEED_SHOULD_SEND",
+  });
+
+  const result = collectDashboardFeed(agentHome);
+  const texts = result.events.map((event) => event.text).join("\n");
+
+  assert.equal(texts.includes("U12_OWNER_FEED_SHOULD_NOT_SEND"), false);
+  assert.equal(texts.includes("U12_AGENT_FEED_SHOULD_SEND"), true);
+});
+
 test("dashboard feed sends terminal runner failures with original error text", async () => {
   const agentHome = makeAgentHome("u9-dashboard-runner-failure-");
   setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", exchange_notify_chat_id: "456" });
@@ -124,7 +159,7 @@ test("dashboard feed sends terminal runner failures with original error text", a
   assert.equal(sent.some((text) => /U9_NON_TERMINAL_ERROR_TOKEN/.test(text)), false);
 });
 
-test("dashboard /say broadcasts owner text, consumes budget, and reports missing sessions", async () => {
+test("dashboard /say broadcasts owner text without consuming budget and reports missing sessions", async () => {
   const agentHome = makeAgentHome("u9-dashboard-say-");
   setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
@@ -153,8 +188,8 @@ test("dashboard /say broadcasts owner text, consumes budget, and reports missing
     ["owner", "codex", "U9_SAY_BROADCAST_TOKEN owner note"],
     ["owner", "opus", "U9_SAY_BROADCAST_TOKEN owner note"],
   ]);
-  assert.equal(readJsonl(agentPaths(agentHome).sessions).filter((row) => row.event === "session_message").length, 2);
-  assert.match(sent[0], /已插話 2 封,剩餘 2\/4/);
+  assert.equal(readJsonl(agentPaths(agentHome).sessions).filter((row) => row.event === "session_message").length, 0);
+  assert.match(sent[0], /已插話 2 封,剩餘 4\/4/);
   assert.equal(sent[1], "找不到 session");
 });
 
@@ -423,15 +458,14 @@ test("dashboard /session command opens real session ledger rows with accepted se
 
   assert.equal(result.updates, 3);
   assert.equal(replies.every((reply) => /session #[a-f0-9]{6} 開場/.test(reply)), true);
-  assert.equal(replies.every((reply) => /已開球 2 封\(2\//.test(reply)), true);
+  assert.equal(replies.every((reply) => /已開球 2 封\(0\//.test(reply)), true);
   assert.equal(opened.length, 3);
   assert.equal(opened[0].topic, "U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.");
   assert.deepEqual(opened[0].write_access, ["codex"]);
   assert.deepEqual(opened[0].budget, { max_messages: 3, max_minutes: 9 });
   assert.equal(opened[1].topic, "U6_DASHBOARD_SESSION_EM_DASH topic body.");
   assert.equal(opened[2].topic, "U6_DASHBOARD_SESSION_EN_DASH topic body.");
-  assert.equal(kickoffRows.length, 6);
-  assert.equal(kickoffRows.every((row) => row.from === "owner"), true);
+  assert.equal(kickoffRows.length, 0);
 });
 
 test("dashboard rejects non-owner messages and strict parser failures", async () => {

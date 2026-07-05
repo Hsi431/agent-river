@@ -20,12 +20,12 @@ Session 欄位(鎖定):
 - `session_id`(唯一)、`topic`(owner 5–500 字;agent 發起 20–500 字)、`initiator`(`owner` 或 `agent:<name>`)
 - `participants`:已註冊 agent 名單的子集,≥2 名(initiator 為 agent 時自動列入)
 - `repo`(可選;必須在 `workspace_root` 內,沿用既有 repo-resolver 規則)
-- `budget`:`{max_messages, max_minutes}`。owner 發起預設 10 封/30 分;**agent 發起固定上限 6 封/20 分,不可調高**
+- `budget`:`{max_messages, max_minutes}`。owner 發起預設 10 封/30 分;**agent 發起固定上限 6 封/20 分,不可調高**。**計量語意(2026-07-06 修訂):預算只算 agent 的發言;owner 的開球與 /say 不扣,系統 relay 轉寄不扣**
 - `write_access`:owner 發起時可對指定 participant 開 write(沿用既有 workspace-write 執行路徑);**agent 發起的 session 一律唯讀,無例外**
 - `state`:`active | closed_ok | exhausted | killed`
 
 行為(鎖定):
-- session `active` 期間,participants 之間的 exchange 訊息(帶 `session_id`)**免逐步核准**:runner 自動撿、自動回,每封訊息扣預算。
+- session `active` 期間,participants 之間的 exchange 訊息(帶 `session_id`)**免逐步核准**:runner 自動撿、自動回,agent 每次發言扣預算。**session 綁 repo 時,runner 以該 repo 為工作目錄;未綁 repo 時 prompt 明示「未綁定 repo,勿假設題目與所在 codebase 相關」(2026-07-06 修訂)**。
 - 預算耗盡 → session 轉 `exhausted`,推播看板;未完事項由最後一封信講清楚。
 - owner 隨時可 `/kill <id>`;kill 後該 session 訊息不再被撿。
 - **agent 發起 session 不等 owner 核准,自動開場**,但看板即時推播;這是「求援」場景的核心(owner 睡覺時也能跑)。

@@ -1423,6 +1423,7 @@ test("real codex runner defaults cwd to process.cwd() and closes stdin", async (
   });
   assert.equal(result.text, "ok");
   assert.equal(state.cwd, process.cwd());
+  assert.equal(state.args[state.args.indexOf("-C") + 1], process.cwd());
   assert.equal(state.stdinEnded, true);
 });
 test("real codex runner passes the prompt on stdin, not in argv", async () => {
@@ -1433,8 +1434,8 @@ test("real codex runner passes the prompt on stdin, not in argv", async () => {
     execFileImpl: captureCodexExec(state, { writeOut: "ok" }),
   });
   assert.equal(state.command, "codex");
-  assert.equal(state.args.length, 6);
-  assert.deepEqual(state.args.slice(0, 5), ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-o"]);
+  assert.equal(state.args.length, 8);
+  assert.deepEqual(state.args.slice(0, 7), ["exec", "-C", process.cwd(), "--sandbox", "read-only", "--skip-git-repo-check", "-o"]);
   assert.equal(state.args.includes(prompt), false);
   assert.match(state.stdinData, /stdin-only-prompt-text/);
   assert.equal(state.stdinEnded, true);
@@ -1520,7 +1521,7 @@ test("real edit runner uses workspace-write sandbox", async () => {
   assert.equal(result.text, "edited");
   assert.equal(result.step, "editing");
   assert.equal(state.cwd, "/repo/editable");
-  assert.deepEqual(state.args.slice(0, 5), ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "-o"]);
+  assert.deepEqual(state.args.slice(0, 7), ["exec", "-C", "/repo/editable", "--sandbox", "workspace-write", "--skip-git-repo-check", "-o"]);
 });
 
 test("parseCodexTokenUsage parses the codex usage line", () => {
