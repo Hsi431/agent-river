@@ -35,6 +35,7 @@ import {
 import { runExchangeRunnerOnce, defaultRunnerSettingsPath, runnerSessionStatus } from "./exchange-runner.js";
 import { runCodexExchangeRunnerOnce } from "./codex-exchange-runner.js";
 import { getSession, killSession, listActiveSessions, openSession } from "./sessions.js";
+import { getRegisteredAgent, isActivePollAgent, joinAgentRegistry, listRegisteredAgents, seedSpawnAgents, verifyAgentToken } from "./registry.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "./orchestrator.js";
 import { resolveAgentHome } from "./paths.js";
@@ -50,7 +51,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "channel", "chat-id", "codex-runner-model", "context-max-chars", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "initiator", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "participants", "per-chat-interval-seconds", "repo", "request", "require-approval", "session", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "context-max-chars", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "initiator", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "name", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "participants", "per-chat-interval-seconds", "repo", "request", "require-approval", "session", "settings", "sleep-seconds", "state", "style", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
@@ -83,6 +84,7 @@ export async function runAgentCli(argv) {
     case "chat-prune":
       return printResult(pruneChatState({ agentHome, days: requireArg(args, "days") }));
     case "exchange-submit":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "from"), tokenFile: args["token-file"] });
       return printResult({
         message: submitExchangeMessage({
           agentHome,
@@ -95,6 +97,7 @@ export async function runAgentCli(argv) {
         }),
       });
     case "session-open":
+      requireSessionInitiatorTokenIfNeeded({ agentHome, initiator: requireArg(args, "initiator"), tokenFile: args["token-file"] });
       return printResult({
         session: await openSession({
           agentHome,
@@ -114,12 +117,16 @@ export async function runAgentCli(argv) {
     case "session-kill":
       return printResult({ session: killSession({ agentHome, id: requireArg(args, "id") }) });
     case "exchange-inbox":
+      if (args.agent) {
+        requirePollAgentTokenIfNeeded({ agentHome, name: args.agent, tokenFile: args["token-file"] });
+      }
       return printResult({ messages: listExchangeInbox(agentHome, { agent: args.agent }) });
     case "exchange-replies":
       return printResult({ replies: listExchangeReplies(agentHome, { agent: requireArg(args, "agent"), threadId: args.thread }) });
     case "exchange-thread":
       return printResult(getExchangeThread(agentHome, requireArg(args, "id")));
     case "exchange-claim":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "agent"), tokenFile: args["token-file"] });
       return printResult({
         message: claimExchangeMessage({
           agentHome,
@@ -135,6 +142,7 @@ export async function runAgentCli(argv) {
         agent: requireArg(args, "agent"),
       }));
     case "exchange-reply":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "agent"), tokenFile: args["token-file"] });
       return printResult(replyExchangeMessage({
         agentHome,
         id: requireArg(args, "id"),
@@ -218,6 +226,19 @@ export async function runAgentCli(argv) {
       return printResult({ config: enableExchangeAgent(agentHome, { agentId: requireArg(args, "agent"), kind: args.kind || "manual" }) });
     case "agent-disable":
       return printResult({ config: disableExchangeAgent(agentHome, requireArg(args, "agent")) });
+    case "agent-join":
+      return printResult({
+        agent: joinAgentRegistry({
+          agentHome,
+          name: requireArg(args, "name"),
+          style: requireArg(args, "style"),
+          capabilities: requireArg(args, "capabilities"),
+        }),
+      });
+    case "agent-registry-list":
+      return printResult({ agents: listRegisteredAgents(agentHome) });
+    case "registry-seed":
+      return printResult(seedSpawnAgents({ agentHome }));
     case "gateway":
       return printResult(await handleGatewayMessage({
         agentHome,
@@ -445,11 +466,11 @@ function printHelp() {
   chat-status
   chat-prune --days 30
   exchange-submit --from human --to codex --text "..."
-  session-open --initiator owner --participants codex,opus [--repo repo] [--budget-messages N] [--budget-minutes M] [--write-access codex] --topic "..."
+  session-open --initiator owner --participants codex,opus [--repo repo] [--budget-messages N] [--budget-minutes M] [--write-access codex] [--token-file path] --topic "..."
   session-list
   session-show --id session_id
   session-kill --id session_id
-  exchange-inbox [--agent codex]
+  exchange-inbox [--agent codex] [--token-file path]
   exchange-replies --agent codex [--thread thread_id]
   exchange-thread --id msg_id
   exchange-claim --id msg_id --agent codex
@@ -488,6 +509,9 @@ function printHelp() {
   deny-user --user user123
   agent-enable --agent codex --kind coding
   agent-disable --agent codex
+  agent-join --name otter --style poll --capabilities read,write
+  agent-registry-list
+  registry-seed
   gateway --from user123 --text "agent status"
   telegram-update --update-json '{"message":{"from":{"id":123},"chat":{"id":456},"text":"agent status"}}'
   telegram-poll [--transport fetch|curl]
@@ -515,6 +539,48 @@ function printHelp() {
 
 Default state: ~/.codex/agent. Use --state .local-agent-state for development smoke tests.
 Phase D supports local gateway text commands (status, submit, run, approve, reject) and single-shot Telegram polling via TELEGRAM_BOT_TOKEN.`);
+}
+
+function requirePollAgentTokenIfNeeded({ agentHome, name, tokenFile }) {
+  if (!isActivePollAgent(agentHome, name)) {
+    return;
+  }
+  const token = resolveAgentToken(tokenFile);
+  if (!token || !verifyAgentToken(agentHome, name, token)) {
+    throw codedError("bad_agent_token", `bad_agent_token: invalid token for ${name}`);
+  }
+}
+
+function requireSessionInitiatorTokenIfNeeded({ agentHome, initiator, tokenFile }) {
+  const normalized = String(initiator || "").trim();
+  if (!normalized.startsWith("agent:")) {
+    return;
+  }
+  const name = normalized.slice("agent:".length);
+  const registered = getRegisteredAgent(agentHome, name);
+  if (registered?.status !== "active") {
+    throw codedError("agent_not_registered", `agent_not_registered: ${name}`);
+  }
+  if (registered.style === "poll") {
+    requirePollAgentTokenIfNeeded({ agentHome, name, tokenFile });
+  }
+}
+
+function resolveAgentToken(tokenFile) {
+  if (tokenFile) {
+    try {
+      return fs.readFileSync(tokenFile, "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+  return process.env.AGENT_RIVER_TOKEN || "";
+}
+
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function resolveReplyText(args) {

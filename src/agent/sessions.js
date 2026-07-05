@@ -1,6 +1,7 @@
 import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
+import { listRegisteredAgents } from "./registry.js";
 import { getPrimaryAgentId, getTelegramCodexPolicy, readAgentConfig } from "./safety.js";
 import { resolveRepo } from "./v2/repo-resolver.js";
 
@@ -184,6 +185,11 @@ function dispatchTargetAllowlist(agentHome) {
   for (const agent of config.exchange_agents || []) {
     if (agent?.enabled && agent.agent_id && agent.agent_id !== "any") {
       targets.add(String(agent.agent_id));
+    }
+  }
+  for (const agent of listRegisteredAgents(agentHome)) {
+    if (agent.status === "active") {
+      targets.add(agent.name);
     }
   }
   targets.delete("any");

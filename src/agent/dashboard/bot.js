@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { redactSecrets } from "../../lib/secret-scan.js";
 import { agentPaths } from "../paths.js";
+import { approveAgentRegistration, rejectAgentRegistration } from "../registry.js";
 import { getTelegramCodexPolicy } from "../safety.js";
 import { approveAgentTask, rejectAgentTask } from "../orchestrator.js";
 import { collectDashboardFeed, initializeDashboardCursor, loadDashboardCursor, saveDashboardCursor } from "./feed.js";
@@ -147,7 +148,7 @@ async function handleDashboardUpdate({ agentHome, client, update, execFileImpl }
 }
 
 async function handleDashboardCallback({ agentHome, client, callback }) {
-  const parsed = parseGateCallback(callback.data);
+  const parsed = parseDashboardCallback(callback.data);
   if (!parsed) {
     await answerSafe(client, { callbackQueryId: callback.id, text: "Invalid action." });
     return { ok: false, reason: "callback_invalid" };
@@ -158,21 +159,38 @@ async function handleDashboardCallback({ agentHome, client, callback }) {
   }
   let notice;
   try {
-    const task = parsed.action === "approve"
-      ? approveAgentTask({ agentHome, id: parsed.taskId })
-      : rejectAgentTask({ agentHome, id: parsed.taskId });
-    notice = parsed.action === "approve"
-      ? `已放行 ${task.id}`
-      : `已拒絕 ${task.id}`;
+    if (parsed.kind === "join") {
+      notice = handleJoinCallback({ agentHome, action: parsed.action, name: parsed.name });
+    } else {
+      const task = parsed.action === "approve"
+        ? approveAgentTask({ agentHome, id: parsed.taskId })
+        : rejectAgentTask({ agentHome, id: parsed.taskId });
+      notice = parsed.action === "approve"
+        ? `已放行 ${task.id}`
+        : `已拒絕 ${task.id}`;
+    }
   } catch {
-    notice = parsed.action === "approve" ? "無法放行" : "無法拒絕";
+    if (parsed.kind === "join") {
+      notice = parsed.action === "approve" ? "無法核准" : "無法拒絕";
+    } else {
+      notice = parsed.action === "approve" ? "無法放行" : "無法拒絕";
+    }
   }
   await answerSafe(client, { callbackQueryId: callback.id, text: notice });
   const chatId = callback.message?.chat?.id;
   if (chatId) {
     await sendSafe(client, { chatId, text: notice });
   }
-  return { ok: true, reason: `gate_${parsed.action}` };
+  return { ok: true, reason: `${parsed.kind}_${parsed.action}` };
+}
+
+function handleJoinCallback({ agentHome, action, name }) {
+  if (action === "approve") {
+    approveAgentRegistration({ agentHome, name });
+    return `已核准 ${name}, token 已落檔`;
+  }
+  rejectAgentRegistration({ agentHome, name });
+  return `已拒絕 ${name}`;
 }
 
 async function sendSafe(client, { chatId, text, replyMarkup }) {
@@ -183,9 +201,14 @@ async function answerSafe(client, { callbackQueryId, text }) {
   await client.answerCallback({ callbackQueryId, text: redactSecrets(String(text || "")) });
 }
 
-function parseGateCallback(data) {
-  const match = String(data || "").match(/^gate:(approve|reject):(task_[A-Za-z0-9_-]+)$/);
-  return match ? { action: match[1], taskId: match[2] } : null;
+function parseDashboardCallback(data) {
+  const raw = String(data || "");
+  const gate = raw.match(/^gate:(approve|reject):(task_[A-Za-z0-9_-]+)$/);
+  if (gate) {
+    return { kind: "gate", action: gate[1], taskId: gate[2] };
+  }
+  const join = raw.match(/^join:(approve|reject):([a-z][a-z0-9_-]*)$/);
+  return join ? { kind: "join", action: join[1], name: join[2] } : null;
 }
 
 function isPidAlive(pid) {

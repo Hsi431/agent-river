@@ -4,6 +4,7 @@ import { readJsonl } from "../../lib/jsonl.js";
 import { shortHash } from "../../lib/hash.js";
 import { redactSecrets } from "../../lib/secret-scan.js";
 import { agentPaths } from "../paths.js";
+import { listRegisteredAgents } from "../registry.js";
 import { getSession } from "../sessions.js";
 import { listTasks } from "../tasks.js";
 
@@ -38,6 +39,7 @@ export function initializeDashboardCursor(agentHome) {
       exchange_replies: fileSize(paths.exchangeReplies),
     },
     task_keys: taskKeys(agentHome),
+    registry_keys: registryKeys(agentHome),
   };
   saveDashboardCursor(agentHome, cursor);
   return cursor;
@@ -56,11 +58,13 @@ export function collectDashboardFeed(agentHome, { cursor = loadDashboardCursor(a
     ...exchangeMessageEvents(agentHome, paths.exchangeMessages, next),
     ...exchangeReplyEvents(agentHome, paths.exchangeReplies, next, messagesById),
     ...gateEvents(agentHome, next),
+    ...joinEvents(agentHome, next),
   ].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
   next.ledgers.sessions = fileSize(paths.sessions);
   next.ledgers.exchange_messages = fileSize(paths.exchangeMessages);
   next.ledgers.exchange_replies = fileSize(paths.exchangeReplies);
   next.task_keys = taskKeys(agentHome);
+  next.registry_keys = registryKeys(agentHome);
   return { events, cursor: next };
 }
 
@@ -69,6 +73,15 @@ export function gateMarkup(taskId) {
     inline_keyboard: [[
       { text: "放行", callback_data: `gate:approve:${taskId}` },
       { text: "拒絕", callback_data: `gate:reject:${taskId}` },
+    ]],
+  };
+}
+
+export function joinMarkup(name) {
+  return {
+    inline_keyboard: [[
+      { text: "核准", callback_data: `join:approve:${name}` },
+      { text: "拒絕", callback_data: `join:reject:${name}` },
     ]],
   };
 }
@@ -142,6 +155,20 @@ function gateEvents(agentHome, cursor) {
     }));
 }
 
+function joinEvents(agentHome, cursor) {
+  const previous = cursor.registry_keys || {};
+  return listRegisteredAgents(agentHome)
+    .filter((agent) => agent.status === "pending")
+    .filter((agent) => previous[agent.name] !== registryKey(agent))
+    .map((agent) => ({
+      kind: "join",
+      agent_name: agent.name,
+      created_at: agent.requested_at || "",
+      text: `agent join pending ${agent.name} style=${agent.style} capabilities=${agent.capabilities.join(",")}`,
+      reply_markup: joinMarkup(agent.name),
+    }));
+}
+
 function exchangeLine(agentHome, { sessionId, from, to, text }) {
   const session = getSession(agentHome, sessionId) || {};
   return `#${shortSession(sessionId)} ${from || "unknown"}→${to || "unknown"}: ${oneLine(text, SUMMARY_CHARS)} (${session.messages_used ?? "?"}/${session.budget?.max_messages ?? "?"}封)`;
@@ -177,8 +204,20 @@ function taskKeys(agentHome) {
   return out;
 }
 
+function registryKeys(agentHome) {
+  const out = {};
+  for (const agent of listRegisteredAgents(agentHome)) {
+    out[agent.name] = registryKey(agent);
+  }
+  return out;
+}
+
 function taskKey(task) {
   return `${task.status}:${task.approval}:${task.updated_at || ""}`;
+}
+
+function registryKey(agent) {
+  return `${agent.status}:${agent.requested_at || ""}:${agent.approved_at || ""}`;
 }
 
 function normalizeCursor(value) {
@@ -192,6 +231,9 @@ function normalizeCursor(value) {
     },
     task_keys: value?.task_keys && typeof value.task_keys === "object" && !Array.isArray(value.task_keys)
       ? Object.fromEntries(Object.entries(value.task_keys).map(([key, val]) => [String(key), String(val)]))
+      : {},
+    registry_keys: value?.registry_keys && typeof value.registry_keys === "object" && !Array.isArray(value.registry_keys)
+      ? Object.fromEntries(Object.entries(value.registry_keys).map(([key, val]) => [String(key), String(val)]))
       : {},
   };
 }

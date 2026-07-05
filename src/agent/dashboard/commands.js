@@ -1,7 +1,6 @@
-import fs from "node:fs";
 import { shortHash } from "../../lib/hash.js";
 import { redactSecrets } from "../../lib/secret-scan.js";
-import { agentPaths } from "../paths.js";
+import { listRegisteredAgents } from "../registry.js";
 import { getTelegramCodexPolicy } from "../safety.js";
 import { killSession, listActiveSessions, openSession } from "../sessions.js";
 
@@ -49,7 +48,7 @@ export async function handleDashboardCommand({ agentHome, text, execFileImpl } =
     return `session #${shortSession(session.session_id)} killed`;
   }
   if (raw === "/agents") {
-    const registry = readAgentRegistry(agentHome);
+    const registry = listRegisteredAgents(agentHome);
     if (!registry.length) {
       return "尚無註冊 agent";
     }
@@ -108,25 +107,6 @@ function parseSessionCommand(raw) {
 function resolveSessionId(agentHome, input) {
   const raw = String(input || "").trim();
   return listActiveSessions(agentHome).find((session) => session.session_id === raw || shortSession(session.session_id) === raw) || null;
-}
-
-function readAgentRegistry(agentHome) {
-  const file = agentPaths(agentHome).agentRegistry;
-  if (!file || !fs.existsSync(file)) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    const rows = Array.isArray(parsed) ? parsed : Object.values(parsed?.agents || {});
-    return rows
-      .map((item) => ({
-        name: String(item?.name || item?.agent_id || "").trim(),
-        status: String(item?.status || item?.state || "").trim(),
-      }))
-      .filter((item) => item.name);
-  } catch {
-    return [];
-  }
 }
 
 function shortSession(id) {

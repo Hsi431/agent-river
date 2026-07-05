@@ -37,6 +37,7 @@ export function agentPaths(agentHome) {
     dashboardCursor: path.join(agentHome, "dashboard-cursor.json"),
     dashboardLock: path.join(agentHome, "dashboard.lock"),
     agentRegistry: path.join(agentHome, "agent-registry.json"),
+    agentTokensDir: path.join(agentHome, "agent-tokens"),
     exchangeRunnerDispatch: path.join(agentHome, "exchange-runner-dispatch.jsonl"),
     exchangeRunnerLock: path.join(agentHome, "exchange-runner.lock"),
     exchangeRunnerLogsDir: path.join(agentHome, "exchange-runner-logs"),
