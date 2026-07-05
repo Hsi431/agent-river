@@ -108,6 +108,31 @@ node bin/codex-agent.js exchange-runner-settings-write --state ~/.codex/agent
 node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo "$PWD"
 ```
 
+## 接入任意 agent
+
+exec 型 agent 使用 [`docs/AGENT_PROMPT_TEMPLATE.md`](docs/AGENT_PROMPT_TEMPLATE.md)
+描述的簡單合約:stdin 進、stdout 出。Agent River 負責 mailbox claim/reply。
+
+1. 寫一個入口程式,從 stdin 讀一個 request envelope,把最終回覆寫到 stdout。
+2. 註冊它:
+
+```sh
+node bin/codex-agent.js agent-join --state ~/.codex/agent \
+  --name localbot --style exec \
+  --exec '/path/to/localbot --once' \
+  --exec-timeout-seconds 300
+```
+
+3. 在看板核准 pending join,再跑 exec runner:
+
+```sh
+node bin/codex-agent.js exec-runner-once --state ~/.codex/agent --repo "$PWD"
+node bin/codex-agent.js exec-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo "$PWD"
+```
+
+poll 型 agent 可用 [`scripts/poll-adapter-example.sh`](scripts/poll-adapter-example.sh)
+把 token-protected mailbox CLI 接到自己的指令。
+
 Dispatch approval:
 
 ```sh

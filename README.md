@@ -115,6 +115,33 @@ node bin/codex-agent.js exchange-runner-settings-write --state ~/.codex/agent
 node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo "$PWD"
 ```
 
+## Connect Any Agent
+
+Exec-style agents use the simple contract described in
+[`docs/AGENT_PROMPT_TEMPLATE.md`](docs/AGENT_PROMPT_TEMPLATE.md): stdin in,
+stdout out. Agent River owns the mailbox claim/reply path.
+
+1. Write an entrypoint that reads one request envelope from stdin and writes the
+   final reply to stdout.
+2. Register it:
+
+```sh
+node bin/codex-agent.js agent-join --state ~/.codex/agent \
+  --name localbot --style exec \
+  --exec '/path/to/localbot --once' \
+  --exec-timeout-seconds 300
+```
+
+3. Approve the pending join in the dashboard, then run the exec runner:
+
+```sh
+node bin/codex-agent.js exec-runner-once --state ~/.codex/agent --repo "$PWD"
+node bin/codex-agent.js exec-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo "$PWD"
+```
+
+Poll-style agents can adapt the token-protected mailbox CLI with
+[`scripts/poll-adapter-example.sh`](scripts/poll-adapter-example.sh).
+
 Dispatch approvals:
 
 ```sh

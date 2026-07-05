@@ -357,6 +357,96 @@ export function codexRunnerServiceStatus({ dir, repoDir = process.cwd(), nodePat
   };
 }
 
+// ── Exec agent runner service ───────────────────────────────────────────────
+
+const EXEC_RUNNER_SERVICE_NAME = "codex-agent-exec-runner.service";
+const EXEC_RUNNER_TIMER_NAME = "codex-agent-exec-runner.timer";
+const DEFAULT_EXEC_RUNNER_INTERVAL_SECONDS = 90;
+
+export function buildExecRunnerService({ agentHome, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const interval = Number.isFinite(Number(intervalSeconds)) && Number(intervalSeconds) > 0
+    ? Math.floor(Number(intervalSeconds))
+    : DEFAULT_EXEC_RUNNER_INTERVAL_SECONDS;
+  const args = [
+    path.join(repoDir, "bin", "codex-agent.js"),
+    "exec-runner-once",
+    "--state", agentHome,
+    "--repo", repoDir,
+  ];
+  const execStart = `${nodePath} ${args.join(" ")}`;
+  const unit = [
+    "[Unit]",
+    "Description=Codex Agent exec-style agent runner (one-shot, stdin/stdout mailbox executor)",
+    "",
+    "[Service]",
+    "Type=oneshot",
+    `WorkingDirectory=${repoDir}`,
+    `Environment=PATH=${SERVICE_PATH}`,
+    `ExecStart=${execStart}`,
+    "",
+  ].join("\n");
+  const timer = [
+    "[Unit]",
+    "Description=Run the exec-style agent runner periodically",
+    "",
+    "[Timer]",
+    "OnBootSec=2min",
+    `OnUnitActiveSec=${interval}s`,
+    `Unit=${EXEC_RUNNER_SERVICE_NAME}`,
+    "Persistent=false",
+    "",
+    "[Install]",
+    "WantedBy=timers.target",
+    "",
+  ].join("\n");
+  return {
+    unit_name: EXEC_RUNNER_SERVICE_NAME,
+    timer_name: EXEC_RUNNER_TIMER_NAME,
+    interval_seconds: interval,
+    unit,
+    timer,
+  };
+}
+
+export function writeExecRunnerService({ agentHome, dir, repoDir, nodePath, intervalSeconds } = {}) {
+  if (!dir) {
+    throw new Error("Missing required --dir");
+  }
+  const built = buildExecRunnerService({ agentHome, repoDir, nodePath, intervalSeconds });
+  fs.mkdirSync(dir, { recursive: true });
+  const unitPath = path.join(dir, built.unit_name);
+  const timerPath = path.join(dir, built.timer_name);
+  fs.writeFileSync(unitPath, built.unit);
+  fs.writeFileSync(timerPath, built.timer);
+  return {
+    unit_path: unitPath,
+    timer_path: timerPath,
+    unit_name: built.unit_name,
+    timer_name: built.timer_name,
+    note: "Files written but NOT enabled. This tool never runs systemctl.",
+    next_steps: execRunnerServiceStatus({ agentHome, dir }).commands,
+  };
+}
+
+export function execRunnerServiceStatus({ agentHome, dir, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
+  const built = buildExecRunnerService({ agentHome, repoDir, nodePath, intervalSeconds });
+  const unitPath = path.join(targetDir, EXEC_RUNNER_SERVICE_NAME);
+  const timerPath = path.join(targetDir, EXEC_RUNNER_TIMER_NAME);
+  return {
+    dir: targetDir,
+    unit: { name: EXEC_RUNNER_SERVICE_NAME, path: unitPath, ...fileDrift(unitPath, built.unit) },
+    timer: { name: EXEC_RUNNER_TIMER_NAME, path: timerPath, ...fileDrift(timerPath, built.timer) },
+    note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
+    commands: {
+      reload: "systemctl --user daemon-reload",
+      enable: `systemctl --user enable --now ${EXEC_RUNNER_TIMER_NAME}`,
+      disable: `systemctl --user disable --now ${EXEC_RUNNER_TIMER_NAME}`,
+      logs: `journalctl --user -u ${EXEC_RUNNER_SERVICE_NAME}`,
+    },
+  };
+}
+
 // ── v3 dashboard bridge service ─────────────────────────────────────────────
 
 const DASHBOARD_SERVICE_NAME = "codex-agent-dashboard.service";

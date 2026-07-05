@@ -236,8 +236,10 @@ async function handleDashboardCallback({ agentHome, client, callback }) {
 
 function handleJoinCallback({ agentHome, action, name }) {
   if (action === "approve") {
-    approveAgentRegistration({ agentHome, name });
-    return `已核准 ${name}, token 已落檔`;
+    const approved = approveAgentRegistration({ agentHome, name });
+    return approved.agent.style === "poll"
+      ? `已核准 ${name}, token 已落檔`
+      : `已核准 ${name}, ${approved.agent.style} 型由 Node 代管,不產 token`;
   }
   rejectAgentRegistration({ agentHome, name });
   return `已拒絕 ${name}`;

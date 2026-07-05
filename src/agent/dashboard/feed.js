@@ -164,9 +164,16 @@ function joinEvents(agentHome, cursor) {
       kind: "join",
       agent_name: agent.name,
       created_at: agent.requested_at || "",
-      text: `agent join pending ${agent.name} style=${agent.style} capabilities=${agent.capabilities.join(",")}`,
+      text: joinLine(agent),
       reply_markup: joinMarkup(agent.name),
     }));
+}
+
+function joinLine(agent) {
+  const base = `agent join pending ${agent.name} style=${agent.style} capabilities=${agent.capabilities.join(",")}`;
+  return agent.style === "exec"
+    ? `${base} command=${agent.exec_command}`
+    : base;
 }
 
 function exchangeLine(agentHome, { sessionId, from, to, text }) {

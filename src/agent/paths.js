@@ -43,5 +43,7 @@ export function agentPaths(agentHome) {
     codexExchangeRunnerDispatch: path.join(agentHome, "codex-exchange-runner-dispatch.jsonl"),
     codexExchangeRunnerLock: path.join(agentHome, "codex-exchange-runner.lock"),
     codexExchangeRunnerLogsDir: path.join(agentHome, "codex-exchange-runner-logs"),
+    execRunnerDispatch: path.join(agentHome, "exec-runner-dispatch.jsonl"),
+    execRunnerLock: path.join(agentHome, "exec-runner.lock"),
   };
 }

@@ -5,9 +5,10 @@ import { agentPaths } from "./paths.js";
 import { getPrimaryAgentId, readAgentConfig } from "./safety.js";
 
 export const VALID_AGENT_NAME = /^[a-z][a-z0-9_-]*$/;
-const VALID_STYLES = new Set(["poll", "spawn"]);
+const VALID_STYLES = new Set(["poll", "spawn", "exec"]);
 const VALID_STATUSES = new Set(["pending", "active", "rejected"]);
 const VALID_CAPABILITIES = new Set(["read", "write"]);
+const DEFAULT_EXEC_TIMEOUT_SECONDS = 300;
 
 export function readAgentRegistry(agentHome) {
   const file = agentPaths(agentHome).agentRegistry;
@@ -43,21 +44,36 @@ export function isActivePollAgent(agentHome, name) {
   return agent?.status === "active" && agent.style === "poll";
 }
 
-export function joinAgentRegistry({ agentHome, name, style, capabilities, now = new Date() }) {
+export function isActiveRegisteredAgent(agentHome, name) {
+  const agent = getRegisteredAgent(agentHome, name);
+  return agent?.status === "active";
+}
+
+export function joinAgentRegistry({ agentHome, name, style, capabilities, execCommand, execTimeoutSeconds, execCwd, now = new Date() }) {
   const agentName = normalizeAgentName(name);
+  const normalizedStyle = normalizeStyle(style);
   const registry = readAgentRegistry(agentHome);
   const existing = registry.agents[agentName];
   if (existing && (existing.status === "pending" || existing.status === "active")) {
     throw new Error(`Agent already registered: ${agentName}`);
   }
-  registry.agents[agentName] = {
+  if (normalizedStyle !== "exec" && (execCommand || execTimeoutSeconds || execCwd)) {
+    throw new Error("--exec, --exec-timeout-seconds, and --exec-cwd are only valid with --style exec");
+  }
+  const agent = {
     name: agentName,
-    style: normalizeStyle(style),
-    capabilities: normalizeCapabilities(capabilities),
+    style: normalizedStyle,
+    capabilities: normalizeCapabilities(capabilities || (normalizedStyle === "exec" ? "read" : "")),
     status: "pending",
     requested_at: now.toISOString(),
     approved_at: null,
   };
+  if (normalizedStyle === "exec") {
+    agent.exec_command = normalizeExecCommand(execCommand);
+    agent.exec_timeout_seconds = normalizeExecTimeoutSeconds(execTimeoutSeconds);
+    agent.exec_cwd = normalizeExecCwd(execCwd);
+  }
+  registry.agents[agentName] = agent;
   return writeAgentRegistry(agentHome, registry).agents[agentName];
 }
 
@@ -101,15 +117,19 @@ export function approveAgentRegistration({ agentHome, name, now = new Date(), ra
   if (!agent || agent.status !== "pending") {
     throw new Error(`Pending agent registration not found: ${agentName}`);
   }
-  const token = randomBytes(32).toString("hex");
-  writeAgentToken(agentHome, agentName, token);
+  let tokenFile = null;
+  if (agent.style === "poll") {
+    const token = randomBytes(32).toString("hex");
+    writeAgentToken(agentHome, agentName, token);
+    tokenFile = agentTokenPath(agentHome, agentName);
+  }
   registry.agents[agentName] = {
     ...agent,
     status: "active",
     approved_at: now.toISOString(),
   };
   writeAgentRegistry(agentHome, registry);
-  return { agent: registry.agents[agentName], token_file: agentTokenPath(agentHome, agentName) };
+  return { agent: registry.agents[agentName], token_file: tokenFile };
 }
 
 export function rejectAgentRegistration({ agentHome, name, now = new Date() }) {
@@ -187,6 +207,11 @@ function normalizeAgent(value) {
     status: VALID_STATUSES.has(status) ? status : "pending",
     requested_at: typeof value.requested_at === "string" ? value.requested_at : null,
     approved_at: typeof value.approved_at === "string" ? value.approved_at : null,
+    ...(value.style === "exec" ? {
+      exec_command: normalizeExecCommand(value.exec_command),
+      exec_timeout_seconds: normalizeExecTimeoutSeconds(value.exec_timeout_seconds),
+      exec_cwd: normalizeExecCwd(value.exec_cwd),
+    } : {}),
   };
 }
 
@@ -201,7 +226,7 @@ function normalizeAgentName(value) {
 function normalizeStyle(value) {
   const style = String(value || "").trim();
   if (!VALID_STYLES.has(style)) {
-    throw new Error("--style must be poll or spawn");
+    throw new Error("--style must be poll, spawn, or exec");
   }
   return style;
 }
@@ -213,4 +238,28 @@ function normalizeCapabilities(value) {
     throw new Error("--capabilities must be read or read,write");
   }
   return Array.from(new Set(out)).sort();
+}
+
+function normalizeExecCommand(value) {
+  const command = String(value || "").trim();
+  if (!command) {
+    throw new Error("--exec is required for --style exec");
+  }
+  return command;
+}
+
+function normalizeExecTimeoutSeconds(value) {
+  if (value === undefined || value === null || value === "") {
+    return DEFAULT_EXEC_TIMEOUT_SECONDS;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("--exec-timeout-seconds must be a positive integer");
+  }
+  return parsed;
+}
+
+function normalizeExecCwd(value) {
+  const cwd = String(value || "").trim();
+  return cwd || null;
 }

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { parseArgs, requireArg, validateValueOptions } from "../lib/args.js";
 import { resolveStateHome } from "../lib/paths.js";
-import { buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus, buildDashboardService, writeDashboardService, dashboardServiceStatus } from "./service.js";
+import { buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus, buildExecRunnerService, writeExecRunnerService, execRunnerServiceStatus, buildDashboardService, writeDashboardService, dashboardServiceStatus } from "./service.js";
 import {
   claimExchangeMessage,
   exchangeStatus,
@@ -16,6 +16,7 @@ import {
 } from "./exchange.js";
 import { runExchangeRunnerOnce, defaultRunnerSettingsPath, runnerSessionStatus } from "./exchange-runner.js";
 import { runCodexExchangeRunnerOnce } from "./codex-exchange-runner.js";
+import { runExecRunnerOnce } from "./exec-runner.js";
 import { getSession, killSession, listActiveSessions, openSession } from "./sessions.js";
 import { getRegisteredAgent, isActivePollAgent, joinAgentRegistry, listRegisteredAgents, seedSpawnAgents, verifyAgentToken } from "./registry.js";
 import { handleGatewayMessage } from "./gateway.js";
@@ -33,7 +34,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
@@ -160,6 +161,11 @@ export async function runAgentCli(argv) {
     }
     case "exchange-runner-session-status":
       return printResult({ sessions: runnerSessionStatus(agentHome, { chatId: args["chat-id"] }) });
+    case "exec-runner-once":
+      return printResult(await runExecRunnerOnce({
+        agentHome,
+        repoDir: args.repo || process.cwd(),
+      }));
     case "pause":
       return printResult({ config: setKillSwitch(agentHome, true) });
     case "resume":
@@ -180,7 +186,10 @@ export async function runAgentCli(argv) {
           agentHome,
           name: requireArg(args, "name"),
           style: requireArg(args, "style"),
-          capabilities: requireArg(args, "capabilities"),
+          capabilities: args.capabilities,
+          execCommand: args.exec,
+          execTimeoutSeconds: args["exec-timeout-seconds"],
+          execCwd: args["exec-cwd"],
         }),
       });
     case "agent-registry-list":
@@ -249,6 +258,12 @@ export async function runAgentCli(argv) {
       return printResult(writeCodexRunnerService({ dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
     case "codex-runner-service-status":
       return printResult(codexRunnerServiceStatus({ dir: args.dir, repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "exec-runner-service-print":
+      return printResult(buildExecRunnerService({ agentHome, repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "exec-runner-service-write":
+      return printResult(writeExecRunnerService({ agentHome, dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "exec-runner-service-status":
+      return printResult(execRunnerServiceStatus({ agentHome, dir: args.dir, repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
     case "exchange-runner-settings-print":
       return printResult(buildOpusRunnerSettings());
     case "exchange-runner-settings-write":
@@ -326,6 +341,7 @@ function printHelp() {
   dispatch-show --id dispatch_id
   exchange-runner --agent opus --once [--repo /path] [--settings /path/opus-runner-settings.json]
   exchange-runner --agent codex --once [--repo /path]
+  exec-runner-once [--repo /path]
   exchange-runner-session-status [--chat-id telegram_chat_id]
   exchange-runner-service-print [--repo /path] [--interval-seconds N]
   exchange-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
@@ -333,6 +349,9 @@ function printHelp() {
   codex-runner-service-print [--repo /path] [--interval-seconds N]
   codex-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
   codex-runner-service-status [--dir DIR] [--repo /path] [--interval-seconds N]
+  exec-runner-service-print [--repo /path] [--interval-seconds N]
+  exec-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
+  exec-runner-service-status [--dir DIR] [--repo /path] [--interval-seconds N]
   exchange-runner-settings-print
   exchange-runner-settings-write [--settings /path/opus-runner-settings.json]
   opus-edit-settings-print [--repo /path]
@@ -345,6 +364,7 @@ function printHelp() {
   agent-enable --agent codex --kind coding
   agent-disable --agent codex
   agent-join --name otter --style poll --capabilities read,write
+  agent-join --name localbot --style exec --exec 'command reading stdin and writing stdout' [--capabilities read] [--exec-timeout-seconds 300] [--exec-cwd /path]
   agent-registry-list
   registry-seed
   gateway --from user123 --text "agent status"

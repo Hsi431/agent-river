@@ -2,7 +2,7 @@ import { appendJsonl, readJsonl, writeJsonl } from "../lib/jsonl.js";
 import { redactSecrets, scanSecrets } from "../lib/secret-scan.js";
 import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
-import { isActivePollAgent } from "./registry.js";
+import { isActiveRegisteredAgent } from "./registry.js";
 import { isExchangeAgentEnabled } from "./safety.js";
 import { assertSessionMessageAllowed, consumeBudget, getSession } from "./sessions.js";
 
@@ -384,7 +384,7 @@ function normalizeLeaseSeconds(value) {
 
 function requireEnabledAgent(agentHome, agent) {
   const agentId = requireName(agent, "agent");
-  if (!isExchangeAgentEnabled(agentHome, agentId) && !isActivePollAgent(agentHome, agentId)) {
+  if (!isExchangeAgentEnabled(agentHome, agentId) && !isActiveRegisteredAgent(agentHome, agentId)) {
     throw new Error(`Exchange agent is not enabled: ${agentId}`);
   }
   return agentId;
