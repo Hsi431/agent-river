@@ -11,6 +11,35 @@ Codex/Claude worker。Telegram v3 看板負責 owner 操作、v2 agent 啟動、
 狀態:早期但可用,適合單一本機 operator。v3 看板、v2 launcher、exchange/session 帳本、
 dispatch 核准、runner、安全閘與機密掃描都有測試覆蓋。
 
+## Quickstart
+
+系統需求:**Linux + systemd(user session);其他平台未支援**。
+
+```sh
+git clone https://github.com/Hsi431/agent-river.git agent-river
+cd agent-river
+npm install
+node bin/codex-agent.js init
+```
+
+接著填 `~/.config/codex-agent/telegram.env`,reload 並 enable 產生的 user units:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now codex-agent-dashboard.service
+systemctl --user enable --now codex-agent-opus-runner.timer
+systemctl --user enable --now codex-agent-codex-runner.timer
+systemctl --user enable --now codex-agent-exec-runner.timer
+```
+
+到 Telegram 開 session:
+
+```text
+/session codex,opus -- 題目
+```
+
+可選:跑過 `npm link` 後,也可用 `agent-river <cmd>`。
+
 ## 核心流程
 
 - **v3 看板:**正式 Telegram long-poller。接 owner 訊息、處理看板 callback,並 flush v2
@@ -88,6 +117,13 @@ node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
 ```text
 @claude repo=agent-river -- review the current diff
 @codex repo=agent-river mode=write -- update the docs
+/session codex,opus -- plan this change
+/say <session> continue with the next step
+/sessions
+/kill <session>
+/agents
+/model
+/task <session> repo=agent-river
 /status
 /stop
 ```

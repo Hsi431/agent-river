@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseArgs, requireArg, validateValueOptions } from "../lib/args.js";
-import { resolveStateHome } from "../lib/paths.js";
+import { expandHome, resolveStateHome } from "../lib/paths.js";
 import { buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus, buildExecRunnerService, writeExecRunnerService, execRunnerServiceStatus, buildDashboardService, writeDashboardService, dashboardServiceStatus } from "./service.js";
 import {
   claimExchangeMessage,
@@ -34,10 +36,20 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  if (args.help) {
+    return printHelp();
+  }
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
+    case "init":
+      return printResult(initAgentRiver({
+        agentHome,
+        workspaceRoot: args["workspace-root"],
+        systemdDir: args["systemd-dir"],
+        repoDir: process.cwd(),
+      }));
     case "submit":
       return printResult({
         task: submitAgentTask({
@@ -317,8 +329,63 @@ function printResult(result) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+function initAgentRiver({ agentHome, workspaceRoot, systemdDir, repoDir }) {
+  const seeded = seedSpawnAgents({ agentHome });
+  const policy = getTelegramCodexPolicy(agentHome);
+  const workspace = workspaceRoot && !policy.workspace_root
+    ? setTelegramCodexPolicy(agentHome, { workspace_root: workspaceRoot }).telegram_codex_policy.workspace_root
+    : policy.workspace_root;
+  const unitDir = path.resolve(expandHome(systemdDir || path.join(os.homedir(), ".config", "systemd", "user")));
+  const serviceResults = [
+    writeDashboardService({ agentHome, dir: unitDir, repoDir }),
+    writeOpusRunnerService({ dir: unitDir, repoDir }),
+    writeCodexRunnerService({ dir: unitDir, repoDir }),
+    writeExecRunnerService({ agentHome, dir: unitDir, repoDir }),
+  ];
+  const telegramEnv = ensureTelegramEnvTemplate();
+  return {
+    state: agentHome,
+    workspace_root: workspace,
+    workspace_root_written: Boolean(workspaceRoot && !policy.workspace_root),
+    registry: seeded,
+    systemd_dir: unitDir,
+    units: serviceResults.map(({ unit_name, timer_name, unit_path, timer_path }) => ({
+      unit_name,
+      timer_name,
+      unit_path,
+      timer_path,
+    })),
+    telegram_env: telegramEnv,
+    next_steps: [
+      `Fill TELEGRAM_BOT_TOKEN in ${telegramEnv.path}`,
+      "systemctl --user daemon-reload",
+      "systemctl --user enable --now codex-agent-dashboard.service",
+      "systemctl --user enable --now codex-agent-opus-runner.timer",
+      "systemctl --user enable --now codex-agent-codex-runner.timer",
+      "systemctl --user enable --now codex-agent-exec-runner.timer",
+      "Send /session codex,opus -- <topic> in Telegram",
+    ],
+  };
+}
+
+function ensureTelegramEnvTemplate() {
+  const envPath = path.join(os.homedir(), ".config", "codex-agent", "telegram.env");
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
+  if (fs.existsSync(envPath)) {
+    return { path: envPath, written: false };
+  }
+  fs.writeFileSync(envPath, [
+    "# Agent River Telegram dashboard bot token.",
+    "# Fill this before enabling codex-agent-dashboard.service.",
+    "TELEGRAM_BOT_TOKEN=",
+    "",
+  ].join("\n"), { mode: 0o600 });
+  return { path: envPath, written: true };
+}
+
 function printHelp() {
   console.log(`codex-agent commands:
+  init [--state /path] [--workspace-root /path] [--systemd-dir /path]
   submit --repo /path --request "..." --mode plan
   status [task_id]
   run

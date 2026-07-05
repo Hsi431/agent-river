@@ -2,6 +2,31 @@
 
 All notable changes to Agent River will be documented in this file.
 
+## v0.3.0 — 2026-07-06
+
+### Added
+- Collab sessions: budget rings counting only agent messages, kickoff plus
+  automatic relay, agent-initiated help requests with read-only fixed small
+  budgets, transcript harvesting, and two-step approval to convert a session
+  into an edit task.
+- Dashboard bot replaces v1 remotes: live feed, `/session`, `/say`, `/sessions`,
+  `/kill`, `/agents`, `/model`, `/task`, hard-gate and registry approval buttons,
+  and failure pushes that include the original error text.
+- Handshake onboarding: `agent-join` with poll+token or one-line exec intake,
+  per-agent tokens, and the participant prompt template in
+  `docs/AGENT_PROMPT_TEMPLATE.md`.
+- v2 `@agent` launcher is merged into the dashboard as the single poller.
+
+### Changed
+- Packaging now exposes `agent-river` as a CLI bin and adds `init` for first-run
+  state, registry, systemd unit, and Telegram env template setup.
+
+### Breaking
+- v1 chat/classifier/old Telegram command surfaces are retired (-9.3k lines).
+  The old `codex-agent-telegram-bridge.service` is replaced by
+  `codex-agent-dashboard.service`; see
+  `docs/history/WORKORDER_U4_KILLLIST.md` for cutover notes.
+
 ## v0.2.0 — 2026-06-08
 
 ### v2 Phase 1 (branch: v2-phase1)

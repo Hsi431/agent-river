@@ -13,6 +13,36 @@ Status: early but usable for a single local operator. The v3 dashboard, v2
 launcher, exchange/session ledgers, dispatch approvals, runners, safety gates,
 and secret scanning are covered by the test suite.
 
+## Quickstart
+
+System requirement: **Linux + systemd (user session); other platforms are not supported.**
+
+```sh
+git clone https://github.com/Hsi431/agent-river.git agent-river
+cd agent-river
+npm install
+node bin/codex-agent.js init
+```
+
+Then fill `~/.config/codex-agent/telegram.env`, reload and enable the generated
+user units:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now codex-agent-dashboard.service
+systemctl --user enable --now codex-agent-opus-runner.timer
+systemctl --user enable --now codex-agent-codex-runner.timer
+systemctl --user enable --now codex-agent-exec-runner.timer
+```
+
+Start a Telegram session:
+
+```text
+/session codex,opus -- your task
+```
+
+Optional: after `npm link`, the CLI is also available as `agent-river <cmd>`.
+
 ## Core Flows
 
 - **v3 dashboard:** the production Telegram long-poller. It accepts owner
@@ -94,6 +124,13 @@ Messages to the dashboard:
 ```text
 @claude repo=agent-river -- review the current diff
 @codex repo=agent-river mode=write -- update the docs
+/session codex,opus -- plan this change
+/say <session> continue with the next step
+/sessions
+/kill <session>
+/agents
+/model
+/task <session> repo=agent-river
 /status
 /stop
 ```
