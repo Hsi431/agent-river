@@ -156,6 +156,8 @@ test("exec runner stops picking a message after two failed attempts", async () =
   assert.equal(third.results[0].reason, "no_eligible_message");
   assert.equal(pickEligibleExecMessage(agentHome, "failbot"), null);
   assert.deepEqual(dispatch.map((row) => row.outcome), ["failed_released", "failed_released"]);
+  assert.match(dispatch[0].error, /exit 2/);
+  assert.match(dispatch[1].error, /exit 2/);
   assert.equal(claims.at(-1).status, "released");
 });
 

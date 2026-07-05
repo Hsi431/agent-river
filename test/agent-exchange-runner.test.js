@@ -269,15 +269,18 @@ test("exchange runner writes a terminal blocked reply after max attempts", async
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_max_attempts: 2 });
   seedMessages(agentHome, [eligible("msg_blocked")]);
-  const failing = async () => ({ ok: false, timedOut: true });
+  const failing = async () => ({ ok: false, timedOut: true, error: "U9_OPUS_FAILURE_TOKEN old model invalid" });
 
   const first = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: failing });
   const second = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: failing });
   const replies = readJsonl(agentPaths(agentHome).exchangeReplies);
+  const dispatch = readJsonl(agentPaths(agentHome).exchangeRunnerDispatch);
 
   assert.equal(first.reason, "failed_released");
   assert.equal(second.reason, "blocked_terminal");
   assert.equal(second.attempt, 2);
+  assert.match(dispatch[0].error, /U9_OPUS_FAILURE_TOKEN/);
+  assert.match(dispatch[1].error, /U9_OPUS_FAILURE_TOKEN/);
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /^Blocked:/);
   // Message is now completed -> no longer eligible.

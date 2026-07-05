@@ -75,8 +75,9 @@ export async function runCodexExchangeRunnerOnce({
         leaseSeconds: codexLockTtlSeconds(agentHome),
       });
     } catch (error) {
-      recordCodexDispatch(paths, { messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", model: null, now });
-      return summary({ ran: false, reason: "claim_failed", message_id: message.id, error: error.message });
+      const sanitized = sanitizeError(error.message);
+      recordCodexDispatch(paths, { messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", model: null, now, error: sanitized });
+      return summary({ ran: false, reason: "claim_failed", message_id: message.id, error: sanitized });
     }
 
     const attempt = priorAttempts + 1;
@@ -131,7 +132,7 @@ export async function runCodexExchangeRunnerOnce({
 
     if (attempt < maxAttempts) {
       safeCodexRelease(agentHome, message.id);
-      recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now });
+      recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now, error: runError(runResult) });
       return summary({
         ran: true,
         reason: "failed_released",
@@ -151,7 +152,7 @@ export async function runCodexExchangeRunnerOnce({
       blockedOk = false;
       safeCodexRelease(agentHome, message.id);
     }
-    recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now });
+    recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now, error: runError(runResult) });
     return summary({
       ran: true,
       reason: blockedOk ? "blocked_terminal" : "blocked_reply_failed",
@@ -265,12 +266,13 @@ function codexDispatchCountForDay(paths, now) {
     .length;
 }
 
-function recordCodexDispatch(paths, { messageId, attempt, outcome, model, now }) {
+function recordCodexDispatch(paths, { messageId, attempt, outcome, model, now, error = null }) {
   appendJsonl(paths.codexExchangeRunnerDispatch, {
     message_id: messageId,
     attempt,
     outcome,
     model: model || null,
+    ...(error ? { error: sanitizeError(error) } : {}),
     created_at: new Date(now).toISOString(),
   });
 }
@@ -350,6 +352,10 @@ function resolveRepo(message, policy, fallbackRepoDir) {
 
 function sanitizeError(message) {
   return String(message || "").replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+function runError(runResult) {
+  return sanitizeError(runResult?.replyError || runResult?.error || "runner produced no reply");
 }
 
 function serializeRunResult(runResult) {

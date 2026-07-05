@@ -37,6 +37,9 @@ export function initializeDashboardCursor(agentHome) {
       sessions: fileSize(paths.sessions),
       exchange_messages: fileSize(paths.exchangeMessages),
       exchange_replies: fileSize(paths.exchangeReplies),
+      exchange_runner_dispatch: fileSize(paths.exchangeRunnerDispatch),
+      codex_exchange_runner_dispatch: fileSize(paths.codexExchangeRunnerDispatch),
+      exec_runner_dispatch: fileSize(paths.execRunnerDispatch),
     },
     task_keys: taskKeys(agentHome),
     registry_keys: registryKeys(agentHome),
@@ -45,7 +48,7 @@ export function initializeDashboardCursor(agentHome) {
   return cursor;
 }
 
-export function collectDashboardFeed(agentHome, { cursor = loadDashboardCursor(agentHome) } = {}) {
+export function collectDashboardFeed(agentHome, { cursor = loadDashboardCursor(agentHome), skipOpenedSessionIds = [] } = {}) {
   if (!cursor?.initialized) {
     const initialized = initializeDashboardCursor(agentHome);
     return { events: [], cursor: initialized };
@@ -54,15 +57,19 @@ export function collectDashboardFeed(agentHome, { cursor = loadDashboardCursor(a
   const messagesById = new Map(readJsonl(paths.exchangeMessages).map((message) => [message.id, message]));
   const next = normalizeCursor(cursor);
   const events = [
-    ...sessionEvents(agentHome, paths.sessions, next),
+    ...sessionEvents(agentHome, paths.sessions, next, new Set(skipOpenedSessionIds.map(String))),
     ...exchangeMessageEvents(agentHome, paths.exchangeMessages, next),
     ...exchangeReplyEvents(agentHome, paths.exchangeReplies, next, messagesById),
+    ...runnerDispatchEvents(paths, next, messagesById),
     ...gateEvents(agentHome, next),
     ...joinEvents(agentHome, next),
   ].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
   next.ledgers.sessions = fileSize(paths.sessions);
   next.ledgers.exchange_messages = fileSize(paths.exchangeMessages);
   next.ledgers.exchange_replies = fileSize(paths.exchangeReplies);
+  next.ledgers.exchange_runner_dispatch = fileSize(paths.exchangeRunnerDispatch);
+  next.ledgers.codex_exchange_runner_dispatch = fileSize(paths.codexExchangeRunnerDispatch);
+  next.ledgers.exec_runner_dispatch = fileSize(paths.execRunnerDispatch);
   next.task_keys = taskKeys(agentHome);
   next.registry_keys = registryKeys(agentHome);
   return { events, cursor: next };
@@ -86,23 +93,28 @@ export function joinMarkup(name) {
   };
 }
 
-function sessionEvents(agentHome, file, cursor) {
+function sessionEvents(agentHome, file, cursor, skipOpenedSessionIds) {
   return readJsonlSince(file, cursor.ledgers.sessions)
     .filter((event) => event.event === "session_opened" || event.event === "session_closed")
-    .map((event) => {
+    .flatMap((event) => {
       const session = getSession(agentHome, event.session_id) || event;
       const code = shortSession(event.session_id);
       if (event.event === "session_opened") {
+        if (skipOpenedSessionIds.has(String(event.session_id))) {
+          return [];
+        }
         return {
           kind: "session",
           created_at: event.opened_at || event.created_at || "",
           text: `session #${code} 開場 ${participants(session)} budget ${session.budget?.max_messages}/${session.budget?.max_minutes}${event.budget_clamped ? " clamped" : ""}${session.repo ? ` repo=${session.repo}` : ""}`,
         };
       }
+      const transcript = writeSessionTranscript(agentHome, event.session_id);
+      const last = lastSessionMail(agentHome, event.session_id);
       return {
         kind: "session",
         created_at: event.closed_at || event.created_at || "",
-        text: `session #${code} 收場 reason=${event.reason || session.closed_reason || "ok"}`,
+        text: `session #${code} 收場 reason=${event.reason || session.closed_reason || "ok"},逐字稿:${transcript.path}\n最後一封信:\n${redactSecrets(last?.text || "")}`,
       };
     });
 }
@@ -139,6 +151,31 @@ function exchangeReplyEvents(agentHome, file, cursor, messagesById) {
         }),
       };
     });
+}
+
+function runnerDispatchEvents(paths, cursor, messagesById) {
+  return [
+    ...readJsonlSince(paths.exchangeRunnerDispatch, cursor.ledgers.exchange_runner_dispatch)
+      .filter((row) => row.outcome === "blocked_terminal")
+      .map((row) => runnerDispatchEvent("opus", row, messagesById)),
+    ...readJsonlSince(paths.codexExchangeRunnerDispatch, cursor.ledgers.codex_exchange_runner_dispatch)
+      .filter((row) => row.outcome === "blocked_terminal")
+      .map((row) => runnerDispatchEvent("codex", row, messagesById)),
+    ...readJsonlSince(paths.execRunnerDispatch, cursor.ledgers.exec_runner_dispatch)
+      .filter((row) => (row.outcome === "failed_released" || row.outcome === "timed_out_released") && Number(row.attempt) >= 2)
+      .map((row) => runnerDispatchEvent(row.agent || "exec", row, messagesById)),
+  ];
+}
+
+function runnerDispatchEvent(agent, row, messagesById) {
+  const message = messagesById.get(row.message_id) || {};
+  const target = message.session_id ? shortSession(message.session_id) : row.message_id;
+  const error = redactSecrets(String(row.error || row.outcome || "").trim());
+  return {
+    kind: "runner_failure",
+    created_at: row.created_at || "",
+    text: `⚠ ${agent} 放棄回覆 #${target}:${error}`,
+  };
 }
 
 function gateEvents(agentHome, cursor) {
@@ -235,6 +272,9 @@ function normalizeCursor(value) {
       sessions: Math.max(0, Number(value?.ledgers?.sessions) || 0),
       exchange_messages: Math.max(0, Number(value?.ledgers?.exchange_messages) || 0),
       exchange_replies: Math.max(0, Number(value?.ledgers?.exchange_replies) || 0),
+      exchange_runner_dispatch: Math.max(0, Number(value?.ledgers?.exchange_runner_dispatch) || 0),
+      codex_exchange_runner_dispatch: Math.max(0, Number(value?.ledgers?.codex_exchange_runner_dispatch) || 0),
+      exec_runner_dispatch: Math.max(0, Number(value?.ledgers?.exec_runner_dispatch) || 0),
     },
     task_keys: value?.task_keys && typeof value.task_keys === "object" && !Array.isArray(value.task_keys)
       ? Object.fromEntries(Object.entries(value.task_keys).map(([key, val]) => [String(key), String(val)]))
@@ -264,4 +304,84 @@ function participants(session) {
 function oneLine(text, maxChars) {
   const raw = redactSecrets(String(text || "").replace(/\s+/g, " ").trim());
   return raw.length > maxChars ? `${raw.slice(0, Math.max(0, maxChars - 3))}...` : raw;
+}
+
+function writeSessionTranscript(agentHome, sessionId) {
+  const paths = agentPaths(agentHome);
+  const file = path.join(paths.sessionTranscriptsDir, `${sessionId}.md`);
+  if (fs.existsSync(file)) {
+    return { path: file, written: false };
+  }
+  fs.mkdirSync(paths.sessionTranscriptsDir, { recursive: true });
+  fs.writeFileSync(file, transcriptMarkdown(agentHome, sessionId));
+  return { path: file, written: true };
+}
+
+function transcriptMarkdown(agentHome, sessionId) {
+  const paths = agentPaths(agentHome);
+  const sessions = readJsonl(paths.sessions);
+  const messages = readJsonl(paths.exchangeMessages);
+  const replies = readJsonl(paths.exchangeReplies);
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const rows = [];
+  for (const event of sessions) {
+    if (event.session_id === sessionId && event.event === "session_opened") {
+      rows.push({
+        time: event.opened_at || event.created_at || "",
+        from: event.initiator || "owner",
+        to: participants(event),
+        kind: "kickoff",
+        text: event.topic || "",
+      });
+    }
+  }
+  for (const message of messages.filter((row) => row.session_id === sessionId)) {
+    rows.push({
+      time: message.created_at || "",
+      from: message.from || "unknown",
+      to: message.to || "unknown",
+      kind: message.channel === "session" ? "kickoff" : "message",
+      text: message.text || "",
+    });
+  }
+  for (const reply of replies) {
+    const message = messagesById.get(reply.message_id) || {};
+    if ((reply.session_id || message.session_id) !== sessionId) {
+      continue;
+    }
+    rows.push({
+      time: reply.created_at || "",
+      from: reply.agent_id || "unknown",
+      to: message.from || "unknown",
+      kind: "reply",
+      text: reply.text || "",
+    });
+  }
+  rows.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  const body = rows.map((row) => [
+    `## ${row.time || "unknown time"} ${row.kind}`,
+    "",
+    `from: ${row.from || "unknown"}`,
+    `to: ${row.to || "unknown"}`,
+    "",
+    redactSecrets(String(row.text || "")),
+    "",
+  ].join("\n")).join("\n");
+  return [`# Session Transcript ${sessionId}`, "", body].join("\n").trimEnd() + "\n";
+}
+
+function lastSessionMail(agentHome, sessionId) {
+  const paths = agentPaths(agentHome);
+  const messages = readJsonl(paths.exchangeMessages);
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const rows = [
+    ...messages
+      .filter((message) => message.session_id === sessionId)
+      .map((message) => ({ time: message.created_at || "", text: message.text || "" })),
+    ...readJsonl(paths.exchangeReplies)
+      .filter((reply) => (reply.session_id || messagesById.get(reply.message_id)?.session_id) === sessionId)
+      .map((reply) => ({ time: reply.created_at || "", text: reply.text || "" })),
+  ];
+  rows.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  return rows.at(-1) || null;
 }

@@ -237,8 +237,9 @@ export async function runExchangeRunnerOnce({
         leaseSeconds: Number(policy.exchange_runner_timeout_seconds) + LOCK_TTL_BUFFER_SECONDS,
       });
     } catch (error) {
-      recordDispatch(paths, { messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", model: null, now });
-      return summary({ ran: false, reason: "claim_failed", message_id: message.id, error: error.message });
+      const sanitized = sanitizeError(error.message);
+      recordDispatch(paths, { messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", model: null, now, error: sanitized });
+      return summary({ ran: false, reason: "claim_failed", message_id: message.id, error: sanitized });
     }
 
     const attempt = priorAttempts + 1;
@@ -310,7 +311,7 @@ export async function runExchangeRunnerOnce({
 
     if (attempt < maxAttempts) {
       safeRelease(agentHome, message.id);
-      recordDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now });
+      recordDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now, error: spawnError(spawnResult) });
       return summary({
         ran: true,
         reason: "failed_released",
@@ -331,7 +332,7 @@ export async function runExchangeRunnerOnce({
       blockedOk = false;
       safeRelease(agentHome, message.id);
     }
-    recordDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now });
+    recordDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now, error: spawnError(spawnResult) });
     return summary({
       ran: true,
       reason: blockedOk ? "blocked_terminal" : "blocked_reply_failed",
@@ -475,12 +476,13 @@ function dispatchCountForDay(paths, now) {
     .length;
 }
 
-function recordDispatch(paths, { messageId, attempt, outcome, model, now }) {
+function recordDispatch(paths, { messageId, attempt, outcome, model, now, error = null }) {
   appendJsonl(paths.exchangeRunnerDispatch, {
     message_id: messageId,
     attempt,
     outcome,
     model: model || null,
+    ...(error ? { error: sanitizeError(error) } : {}),
     created_at: new Date(now).toISOString(),
   });
 }
@@ -495,6 +497,10 @@ function safeRelease(agentHome, messageId) {
 
 function sanitizeError(message) {
   return String(message || "").replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+function spawnError(spawnResult) {
+  return sanitizeError(spawnResult?.replyError || spawnResult?.error || spawnResult?.stderr || "runner produced no reply");
 }
 
 function lockTtlSeconds(agentHome) {

@@ -46,7 +46,7 @@ function fakeCodexRunner(capturedIds, text) {
 }
 
 function fakeFailingCodexRunner() {
-  return async () => ({ ok: false, text: "", error: "codex exec failed" });
+  return async () => ({ ok: false, text: "", error: "U9_CODEX_FAILURE_TOKEN codex exec failed" });
 }
 
 function latestClaim(agentHome, messageId) {
@@ -237,10 +237,13 @@ test("codex runner writes terminal blocked reply after max attempts", async () =
   const first = await runCodexExchangeRunnerOnce({ agentHome, repoDir: REPO, codexRunnerImpl: fakeFailingCodexRunner() });
   const second = await runCodexExchangeRunnerOnce({ agentHome, repoDir: REPO, codexRunnerImpl: fakeFailingCodexRunner() });
   const replies = readJsonl(agentPaths(agentHome).exchangeReplies);
+  const dispatch = readJsonl(agentPaths(agentHome).codexExchangeRunnerDispatch);
 
   assert.equal(first.reason, "failed_released");
   assert.equal(second.reason, "blocked_terminal");
   assert.equal(second.attempt, 2);
+  assert.match(dispatch[0].error, /U9_CODEX_FAILURE_TOKEN/);
+  assert.match(dispatch[1].error, /U9_CODEX_FAILURE_TOKEN/);
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /^Blocked:/);
   assert.equal(pickEligibleCodexMessage(agentHome), null);

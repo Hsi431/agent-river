@@ -1,12 +1,15 @@
 import { shortHash } from "../../lib/hash.js";
+import { readJsonl } from "../../lib/jsonl.js";
 import { redactSecrets } from "../../lib/secret-scan.js";
 import { listRegisteredAgents } from "../registry.js";
 import { getTelegramCodexPolicy, setTelegramCodexPolicy } from "../safety.js";
-import { killSession, listActiveSessions, openSession } from "../sessions.js";
-import { kickoffSession } from "../exchange.js";
+import { getSession, killSession, listActiveSessions, openSession } from "../sessions.js";
+import { agentPaths } from "../paths.js";
+import { kickoffSession, submitExchangeMessage } from "../exchange.js";
 
-const DASHBOARD_HINT = "這是 v3 看板,指令:/session /sessions /kill /agents /model";
+const DASHBOARD_HINT = "這是 v3 看板,指令:/session /say /sessions /kill /agents /model";
 const SESSION_USAGE = "用法:/session <a,b[,c]> [repo=<名>] [budget=<N>/<M>] [write=<agent>] -- <題目>";
+const SAY_USAGE = "用法:/say <session短碼或id> <話>";
 const SESSION_TOPIC_SEPARATOR = / (?:--|—|–) /u;
 
 export async function handleDashboardCommand({ agentHome, text, execFileImpl } = {}) {
@@ -27,11 +30,17 @@ export async function handleDashboardCommand({ agentHome, text, execFileImpl } =
       });
       const kickoff = kickoffSession({ agentHome, session });
       const current = kickoff.session || session;
-      return `session #${shortSession(session.session_id)} 開場,已開球 ${kickoff.sent} 封(${current.messages_used}/${current.budget.max_messages})(${session.participants.join(",")}/預算 ${session.budget.max_messages}/${session.budget.max_minutes}${session.repo ? `/repo ${session.repo}` : ""})`;
+      return {
+        text: `session #${shortSession(session.session_id)} 開場,已開球 ${kickoff.sent} 封(${current.messages_used}/${current.budget.max_messages})(${session.participants.join(",")}/預算 ${session.budget.max_messages}/${session.budget.max_minutes}${session.repo ? `/repo ${session.repo}` : ""})`,
+        opened_session_id: session.session_id,
+      };
     } catch (error) {
       const line = describeSessionError(error);
       return line ? `${line}\n${SESSION_USAGE}` : SESSION_USAGE;
     }
+  }
+  if (raw.startsWith("/say ")) {
+    return handleSayCommand(agentHome, raw);
   }
   if (raw === "/model" || raw.startsWith("/model ")) {
     return handleModelCommand(agentHome, raw);
@@ -139,6 +148,42 @@ function handleModelCommand(agentHome, raw) {
   }
 }
 
+function handleSayCommand(agentHome, raw) {
+  const match = raw.match(/^\/say\s+(\S+)\s+([\s\S]+)$/u);
+  if (!match || !match[1] || !String(match[2] || "").trim()) {
+    return SAY_USAGE;
+  }
+  const found = resolveAnySessionId(agentHome, match[1]);
+  if (!found) {
+    return "找不到 session";
+  }
+  const session = getSession(agentHome, found.session_id);
+  if (!session || session.state !== "active") {
+    return "session 已收場";
+  }
+  const remaining = Number(session.budget?.max_messages) - Number(session.messages_used || 0);
+  if (remaining < session.participants.length) {
+    return `預算不足:剩 ${Math.max(0, remaining)} 封,需要 ${session.participants.length} 封`;
+  }
+  const text = match[2].trim();
+  let current = session;
+  let sent = 0;
+  for (const target of session.participants) {
+    submitExchangeMessage({
+      agentHome,
+      from: "owner",
+      to: target,
+      channel: "session-say",
+      sessionId: session.session_id,
+      repo: session.repo || null,
+      text,
+    });
+    sent += 1;
+    current = getSession(agentHome, session.session_id) || current;
+  }
+  return `session #${shortSession(session.session_id)} 已插話 ${sent} 封,剩餘 ${Math.max(0, current.budget.max_messages - current.messages_used)}/${current.budget.max_messages}`;
+}
+
 function describeSessionError(error) {
   const details = error?.details || {};
   if (error?.code === "missing_topic_separator") {
@@ -193,6 +238,13 @@ function commandError(code, message, details = {}) {
 function resolveSessionId(agentHome, input) {
   const raw = String(input || "").trim();
   return listActiveSessions(agentHome).find((session) => session.session_id === raw || shortSession(session.session_id) === raw) || null;
+}
+
+function resolveAnySessionId(agentHome, input) {
+  const raw = String(input || "").trim();
+  const opened = readJsonl(agentPaths(agentHome).sessions)
+    .filter((row) => row.event === "session_opened" && row.session_id);
+  return opened.find((row) => row.session_id === raw || shortSession(row.session_id) === raw) || null;
 }
 
 function shortSession(id) {

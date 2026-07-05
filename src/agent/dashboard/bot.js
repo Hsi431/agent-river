@@ -110,17 +110,21 @@ async function runDashboardCycle({
   let nextCursor = loadDashboardCursor(agentHome);
   let nextOffset = nextCursor?.telegram_next_offset ?? null;
   const handled = [];
+  const skipOpenedSessionIds = [];
   for (const update of updates) {
     const result = await handleDashboardUpdate({ agentHome, client, update, execFileImpl, v2Options });
     if (Number.isInteger(update?.update_id)) {
       nextOffset = Math.max(nextOffset ?? 0, update.update_id + 1);
+    }
+    if (result.opened_session_id) {
+      skipOpenedSessionIds.push(result.opened_session_id);
     }
     handled.push({ update_id: update?.update_id ?? null, ...result });
   }
   nextCursor = loadDashboardCursor(agentHome) || { initialized: false };
   nextCursor.telegram_next_offset = nextOffset;
 
-  const feed = collectDashboardFeed(agentHome, { cursor: nextCursor });
+  const feed = collectDashboardFeed(agentHome, { cursor: nextCursor, skipOpenedSessionIds });
   const chatId = dashboardChatId || getTelegramCodexPolicy(agentHome).exchange_notify_chat_id;
   const sentFeed = [];
   if (chatId) {
@@ -164,6 +168,9 @@ async function handleDashboardUpdate({ agentHome, client, update, execFileImpl, 
   let reply;
   if (text.startsWith("/")) {
     reply = await handleDashboardCommand({ agentHome, text, execFileImpl });
+    const payload = typeof reply === "object" && reply !== null ? reply : { text: reply };
+    await sendSafe(client, { chatId, text: payload.text });
+    return { ok: true, reason: "message", ...(payload.opened_session_id ? { opened_session_id: payload.opened_session_id } : {}) };
   } else if (text.trim().startsWith("@")) {
     const v2 = await maybeHandleV2({
       agentHome,

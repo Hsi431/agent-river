@@ -29,6 +29,7 @@ export function agentPaths(agentHome) {
     exchangeReplies: path.join(agentHome, "exchange-replies.jsonl"),
     exchangeNotifications: path.join(agentHome, "exchange-notifications.jsonl"),
     sessions: path.join(agentHome, "sessions.jsonl"),
+    sessionTranscriptsDir: path.join(agentHome, "session-transcripts"),
     dashboardCursor: path.join(agentHome, "dashboard-cursor.json"),
     dashboardLock: path.join(agentHome, "dashboard.lock"),
     agentRegistry: path.join(agentHome, "agent-registry.json"),

@@ -6,13 +6,13 @@ import test from "node:test";
 import { runAgentCli } from "../src/agent/cli.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { allowGatewayUser, enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
-import { openSession } from "../src/agent/sessions.js";
-import { claimExchangeMessage, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
+import { closeSession, openSession } from "../src/agent/sessions.js";
+import { claimExchangeMessage, kickoffSession, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
 import { createDispatchApproval } from "../src/agent/dispatch.js";
 import { createTask, readTask } from "../src/agent/tasks.js";
-import { readJsonl } from "../src/lib/jsonl.js";
+import { appendJsonl, readJsonl } from "../src/lib/jsonl.js";
 import { acquireDashboardLock, dashboardOnce, releaseDashboardLock } from "../src/agent/dashboard/bot.js";
-import { initializeDashboardCursor } from "../src/agent/dashboard/feed.js";
+import { collectDashboardFeed, initializeDashboardCursor } from "../src/agent/dashboard/feed.js";
 import { buildDashboardService } from "../src/agent/service.js";
 import { appendV2Outbox, latestV2Outbox } from "../src/agent/v2/poller.js";
 
@@ -85,6 +85,161 @@ test("dashboard feed cursor sends new session, exchange, and gate events once", 
   assert.equal(restartCalls.filter((call) => call.method === "sendMessage").length, 0);
 });
 
+test("dashboard feed sends terminal runner failures with original error text", async () => {
+  const agentHome = makeAgentHome("u9-dashboard-runner-failure-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", exchange_notify_chat_id: "456" });
+  initializeDashboardCursor(agentHome);
+  const message = submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    channel: "telegram",
+    text: "U9 runner failure request.",
+  });
+  appendJsonl(agentPaths(agentHome).exchangeRunnerDispatch, {
+    message_id: message.id,
+    attempt: 1,
+    outcome: "failed_released",
+    error: "U9_NON_TERMINAL_ERROR_TOKEN should not notify",
+    created_at: "2026-07-06T00:00:00.000Z",
+  });
+  appendJsonl(agentPaths(agentHome).exchangeRunnerDispatch, {
+    message_id: message.id,
+    attempt: 2,
+    outcome: "blocked_terminal",
+    error: "U9_TERMINAL_ERROR_TOKEN invalid model name",
+    created_at: "2026-07-06T00:00:01.000Z",
+  });
+
+  const calls = [];
+  const result = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[]]),
+  });
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+
+  assert.equal(result.feed.some((event) => event.kind === "runner_failure"), true);
+  assert.equal(sent.some((text) => /U9_TERMINAL_ERROR_TOKEN invalid model name/.test(text)), true);
+  assert.equal(sent.some((text) => /U9_NON_TERMINAL_ERROR_TOKEN/.test(text)), false);
+});
+
+test("dashboard /say broadcasts owner text, consumes budget, and reports missing sessions", async () => {
+  const agentHome = makeAgentHome("u9-dashboard-say-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 4,
+    budgetMinutes: 20,
+    topic: "U9 say active session topic.",
+  });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramMessageUpdate({ updateId: 40, fromId: 123, chatId: 456, text: `/say ${session.session_id} U9_SAY_BROADCAST_TOKEN owner note` }),
+      telegramMessageUpdate({ updateId: 41, fromId: 123, chatId: 456, text: "/say missing U9 missing session" }),
+    ]]),
+  });
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages).filter((row) => row.session_id === session.session_id);
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+
+  assert.deepEqual(messages.map((row) => [row.from, row.to, row.text]), [
+    ["owner", "codex", "U9_SAY_BROADCAST_TOKEN owner note"],
+    ["owner", "opus", "U9_SAY_BROADCAST_TOKEN owner note"],
+  ]);
+  assert.equal(readJsonl(agentPaths(agentHome).sessions).filter((row) => row.event === "session_message").length, 2);
+  assert.match(sent[0], /已插話 2 封,剩餘 2\/4/);
+  assert.equal(sent[1], "找不到 session");
+});
+
+test("dashboard feed writes closed-session transcript once and includes path plus full last mail", async () => {
+  const agentHome = makeAgentHome("u9-dashboard-transcript-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", exchange_notify_chat_id: "456" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 8,
+    budgetMinutes: 20,
+    topic: "U9_KICKOFF_TRANSCRIPT_TOKEN kickoff topic.",
+  });
+  kickoffSession({ agentHome, session });
+  const message = submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    sessionId: session.session_id,
+    text: "U9_MESSAGE_TRANSCRIPT_TOKEN request body",
+  });
+  claimExchangeMessage({ agentHome, id: message.id, agent: "opus" });
+  replyExchangeMessage({
+    agentHome,
+    id: message.id,
+    agent: "opus",
+    text: "U9_REPLY_TRANSCRIPT_TOKEN final reply body with enough text to prove no sixty character truncation is applied in the close notice.",
+  });
+  const cursor = initializeDashboardCursor(agentHome);
+  closeSession({ agentHome, id: session.session_id, reason: "ok" });
+
+  const first = collectDashboardFeed(agentHome, { cursor });
+  const closeEvent = first.events.find((event) => /收場/.test(event.text));
+  const transcriptPath = path.join(agentPaths(agentHome).sessionTranscriptsDir, `${session.session_id}.md`);
+  const transcript = fs.readFileSync(transcriptPath, "utf8");
+  fs.writeFileSync(transcriptPath, `${transcript}U9_IDEMPOTENT_MARKER\n`);
+  const second = collectDashboardFeed(agentHome, { cursor });
+
+  assert.ok(closeEvent.text.includes(`逐字稿:${transcriptPath}`));
+  assert.match(closeEvent.text, /U9_REPLY_TRANSCRIPT_TOKEN final reply body with enough text to prove no sixty character truncation is applied/);
+  assert.match(transcript, /U9_KICKOFF_TRANSCRIPT_TOKEN/);
+  assert.match(transcript, /U9_MESSAGE_TRANSCRIPT_TOKEN/);
+  assert.match(transcript, /U9_REPLY_TRANSCRIPT_TOKEN/);
+  assert.equal(second.events.find((event) => /收場/.test(event.text)) !== undefined, true);
+  assert.match(fs.readFileSync(transcriptPath, "utf8"), /U9_IDEMPOTENT_MARKER/);
+});
+
+test("dashboard skips same-cycle /session opened feed but still reports CLI-opened sessions", async () => {
+  const agentHome = makeAgentHome("u9-dashboard-open-dedupe-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", exchange_notify_chat_id: "456" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const dashboardCalls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(dashboardCalls, [[
+      telegramMessageUpdate({ updateId: 50, fromId: 123, chatId: 456, text: "/session codex,opus -- U9_DASHBOARD_OPEN_DEDUPE topic" }),
+    ]]),
+  });
+  const dashboardTexts = dashboardCalls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+  assert.equal(dashboardTexts.filter((text) => /^session #[a-f0-9]{6} 開場/.test(text)).length, 1);
+  assert.equal(dashboardTexts.some((text) => /開場 codex,opus budget/.test(text)), false);
+
+  initializeDashboardCursor(agentHome);
+  await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 4,
+    budgetMinutes: 20,
+    topic: "U9_CLI_OPEN_FEED_TOKEN topic",
+  });
+  const cliCalls = [];
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(cliCalls, [[]]),
+  });
+  const cliTexts = cliCalls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+  assert.equal(cliTexts.some((text) => /開場 codex,opus budget/.test(text)), true);
+});
+
 test("dashboard /session command opens real session ledger rows with accepted separators", async () => {
   const agentHome = makeAgentHome("codex-agent-dashboard-session-");
   setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
@@ -152,7 +307,7 @@ test("dashboard rejects non-owner messages and strict parser failures", async ()
 
   assert.equal(sent[0], "唯讀");
   assert.match(sent[1], /^找不到題目分隔符,參與者後面接 ` -- `\(兩個減號\)再接題目;直接打 — 也可以\n用法:\/session/);
-  assert.equal(sent[2], "這是 v3 看板,指令:/session /sessions /kill /agents /model");
+  assert.equal(sent[2], "這是 v3 看板,指令:/session /say /sessions /kill /agents /model");
   assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
 });
 

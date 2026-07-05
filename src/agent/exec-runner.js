@@ -179,8 +179,9 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
       leaseSeconds: Number(agent.exec_timeout_seconds) + LOCK_TTL_BUFFER_SECONDS,
     });
   } catch (error) {
-    recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", now });
-    return summary(agent.name, { ran: false, reason: "claim_failed", message_id: message.id, error: sanitizeError(error.message) });
+    const sanitized = sanitizeError(error.message);
+    recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", now, error: sanitized });
+    return summary(agent.name, { ran: false, reason: "claim_failed", message_id: message.id, error: sanitized });
   }
 
   const attempt = priorAttempts + 1;
@@ -228,7 +229,7 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
 
   safeRelease(agentHome, message.id, agent.name);
   const outcome = run.timedOut ? "timed_out_released" : "failed_released";
-  recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome, now });
+  recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome, now, error: runError(run) });
   return summary(agent.name, {
     ran: true,
     reason: outcome,
@@ -287,12 +288,13 @@ function failureAttemptsFor(paths, agentName, messageId) {
     .length;
 }
 
-function recordExecDispatch(paths, { agent, messageId, attempt, outcome, now }) {
+function recordExecDispatch(paths, { agent, messageId, attempt, outcome, now, error = null }) {
   appendJsonl(paths.execRunnerDispatch, {
     agent,
     message_id: messageId,
     attempt,
     outcome,
+    ...(error ? { error: sanitizeError(error) } : {}),
     created_at: new Date(now).toISOString(),
   });
 }
@@ -395,6 +397,10 @@ function serializeRun(run) {
 
 function sanitizeError(message) {
   return String(message || "").replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+function runError(run) {
+  return sanitizeError(run?.replyError || run?.error || run?.stderr || "runner produced no reply");
 }
 
 function summary(agent, extra) {
