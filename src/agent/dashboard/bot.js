@@ -5,6 +5,12 @@ import { agentPaths } from "../paths.js";
 import { approveAgentRegistration, rejectAgentRegistration } from "../registry.js";
 import { getTelegramCodexPolicy } from "../safety.js";
 import { approveAgentTask, rejectAgentTask } from "../orchestrator.js";
+import {
+  maybeHandleV2,
+  sendPendingDispatchNotifications,
+  sendPendingExchangeNotifications,
+  sendPendingV2Outbox,
+} from "../telegram.js";
 import { collectDashboardFeed, initializeDashboardCursor, loadDashboardCursor, saveDashboardCursor } from "./feed.js";
 import { createDashboardTelegramClient } from "./client.js";
 import { dashboardHint, handleDashboardCommand, isDashboardOwner } from "./commands.js";
@@ -90,6 +96,9 @@ async function runDashboardCycle({
   longPollSeconds = 0,
   dashboardChatId,
   execFileImpl,
+  token,
+  fetchImpl,
+  v2Options,
 } = {}) {
   const cursor = loadDashboardCursor(agentHome) || initializeDashboardCursor(agentHome);
   const pollTimeout = Math.max(0, Number(longPollSeconds) || 0);
@@ -102,7 +111,7 @@ async function runDashboardCycle({
   let nextOffset = nextCursor?.telegram_next_offset ?? null;
   const handled = [];
   for (const update of updates) {
-    const result = await handleDashboardUpdate({ agentHome, client, update, execFileImpl });
+    const result = await handleDashboardUpdate({ agentHome, client, update, execFileImpl, v2Options });
     if (Number.isInteger(update?.update_id)) {
       nextOffset = Math.max(nextOffset ?? 0, update.update_id + 1);
     }
@@ -120,12 +129,24 @@ async function runDashboardCycle({
       sentFeed.push({ kind: event.kind, task_id: event.task_id || null });
     }
   }
+  const request = createDashboardFlushRequest(client);
+  const v2OutboxResults = await sendPendingV2Outbox({ agentHome, token, request, fetchImpl });
+  const exchangeNotifications = await sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl });
+  const dispatchNotifications = await sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl });
   feed.cursor.telegram_next_offset = nextOffset;
   saveDashboardCursor(agentHome, feed.cursor);
-  return { updates: updates.length, handled, feed: sentFeed, next_offset: nextOffset };
+  return {
+    updates: updates.length,
+    handled,
+    feed: sentFeed,
+    v2_outbox: v2OutboxResults,
+    exchange_notifications: exchangeNotifications,
+    dispatch_notifications: dispatchNotifications,
+    next_offset: nextOffset,
+  };
 }
 
-async function handleDashboardUpdate({ agentHome, client, update, execFileImpl }) {
+async function handleDashboardUpdate({ agentHome, client, update, execFileImpl, v2Options }) {
   const callback = update?.callback_query;
   if (callback?.id && callback?.from?.id && callback?.data) {
     return handleDashboardCallback({ agentHome, client, callback });
@@ -140,11 +161,40 @@ async function handleDashboardUpdate({ agentHome, client, update, execFileImpl }
     return { ok: false, reason: "not_owner" };
   }
   const text = String(message.text || "");
-  const reply = text.startsWith("/")
-    ? await handleDashboardCommand({ agentHome, text, execFileImpl })
-    : dashboardHint();
+  let reply;
+  if (text.startsWith("/")) {
+    reply = await handleDashboardCommand({ agentHome, text, execFileImpl });
+  } else if (text.trim().startsWith("@")) {
+    const v2 = await maybeHandleV2({
+      agentHome,
+      message,
+      execFileImpl,
+      requireOwnerPolicy: false,
+      v2Options,
+    });
+    if (v2?.payload?.method === "sendMessage") {
+      await sendSafe(client, { chatId, text: v2.payload.text, replyMarkup: v2.payload.reply_markup });
+      return { ok: true, reason: "v2" };
+    }
+    reply = dashboardHint();
+  } else {
+    reply = dashboardHint();
+  }
   await sendSafe(client, { chatId, text: reply });
   return { ok: true, reason: "message" };
+}
+
+function createDashboardFlushRequest(client) {
+  return async ({ method, body }) => {
+    if (method !== "sendMessage") {
+      throw new Error(`Unsupported dashboard flush method: ${method}`);
+    }
+    return client.sendMessage({
+      chatId: body.chat_id,
+      text: body.text,
+      replyMarkup: body.reply_markup,
+    });
+  };
 }
 
 async function handleDashboardCallback({ agentHome, client, callback }) {

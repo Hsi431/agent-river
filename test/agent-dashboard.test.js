@@ -8,11 +8,13 @@ import { agentPaths } from "../src/agent/paths.js";
 import { allowGatewayUser, enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { openSession } from "../src/agent/sessions.js";
 import { claimExchangeMessage, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
+import { createDispatchApproval } from "../src/agent/dispatch.js";
 import { createTask, readTask } from "../src/agent/tasks.js";
 import { readJsonl } from "../src/lib/jsonl.js";
 import { acquireDashboardLock, dashboardOnce, releaseDashboardLock } from "../src/agent/dashboard/bot.js";
 import { initializeDashboardCursor } from "../src/agent/dashboard/feed.js";
 import { buildDashboardService } from "../src/agent/service.js";
+import { appendV2Outbox, latestV2Outbox } from "../src/agent/v2/poller.js";
 
 test("dashboard feed cursor sends new session, exchange, and gate events once", async () => {
   const agentHome = makeAgentHome("codex-agent-dashboard-feed-");
@@ -133,6 +135,55 @@ test("dashboard rejects non-owner messages and strict parser failures", async ()
   assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
 });
 
+test("dashboard routes owner @agent messages through v2 and flushes the background outbox", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-v2-");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_user_add: "123",
+    default_repo: process.cwd(),
+    v2_enabled: true,
+  });
+  const calls = [];
+  const backgroundRuns = [];
+
+  const result = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[telegramMessageUpdate({
+      updateId: 23,
+      fromId: 123,
+      chatId: 456,
+      text: "@claude -- DASHBOARD_V2_PROMPT_TOKEN",
+    })]]),
+    v2Options: {
+      adapters: {
+        claude: {
+          async run(args) {
+            assert.equal(args.prompt, "DASHBOARD_V2_PROMPT_TOKEN");
+            return {
+              ok: true,
+              text: "DASHBOARD_V2_OUTBOX_TOKEN",
+              sessionId: "dash_v2_session",
+              tokens: 7,
+              outcome: "ok",
+            };
+          },
+        },
+      },
+      backgroundImpl(fn) {
+        backgroundRuns.push(fn());
+      },
+    },
+  });
+  await Promise.all(backgroundRuns);
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+
+  assert.equal(result.handled[0].reason, "v2");
+  assert.equal(result.v2_outbox.length, 1);
+  assert.match(sent[0], /claude.*mode=read.*session=new/s);
+  assert.equal(sent[1], "DASHBOARD_V2_OUTBOX_TOKEN");
+  assert.equal(latestV2Outbox(agentHome).filter((entry) => entry.status === "queued").length, 0);
+});
+
 test("dashboard rejects gateway-only users for commands and gate callbacks", async () => {
   const agentHome = makeAgentHome("codex-agent-dashboard-gateway-only-");
   setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
@@ -197,6 +248,73 @@ test("dashboard gate callbacks approve tasks and reject non-owner callbacks", as
   assert.match(answers[2], /已拒絕/);
   assert.equal(readTask(agentHome, approved.id).approval, "approved");
   assert.equal(readTask(agentHome, rejected.id).approval, "rejected");
+});
+
+test("dashboard cycle flushes v2, exchange, and dispatch notifications from real ledgers", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-flush-");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_user_add: "123",
+    exchange_notify_enabled: true,
+    exchange_notify_chat_id: "456",
+  });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  appendV2Outbox(agentHome, {
+    id: "v2_dashboard_flush",
+    chat_id: "456",
+    text: "DASHBOARD_FLUSH_V2_TOKEN",
+    status: "queued",
+    created_at: new Date().toISOString(),
+  });
+  const message = submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    channel: "telegram",
+    chatId: "456",
+    text: "DASHBOARD_FLUSH_EXCHANGE_REQUEST_TOKEN",
+  });
+  claimExchangeMessage({ agentHome, id: message.id, agent: "opus" });
+  replyExchangeMessage({
+    agentHome,
+    id: message.id,
+    agent: "opus",
+    text: "DASHBOARD_FLUSH_EXCHANGE_REPLY_TOKEN",
+  });
+  const dispatch = createDispatchApproval({
+    agentHome,
+    proposedBy: "opus",
+    proposal: {
+      to: "codex",
+      task: "Implement the dashboard dispatch flush regression coverage.",
+      reason: "Dashboard now owns Telegram notification flushing.",
+      suggested_mode: "plan",
+    },
+    parentMsgId: "msg_parent",
+    chatId: "456",
+  });
+  initializeDashboardCursor(agentHome);
+  const calls = [];
+
+  const result = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[]]),
+  });
+  const sent = calls.filter((call) => call.method === "sendMessage");
+  const texts = sent.map((call) => call.body.text);
+
+  assert.equal(result.v2_outbox[0].id, "v2_dashboard_flush");
+  assert.equal(result.v2_outbox[0].sent, true);
+  assert.equal(result.exchange_notifications[0].message_id, message.id);
+  assert.equal(result.exchange_notifications[0].sent, true);
+  assert.equal(result.dispatch_notifications[0].id, dispatch.approval.id);
+  assert.equal(result.dispatch_notifications[0].sent, true);
+  assert.equal(texts.some((text) => text === "DASHBOARD_FLUSH_V2_TOKEN"), true);
+  assert.equal(texts.some((text) => /DASHBOARD_FLUSH_EXCHANGE_REPLY_TOKEN/.test(text)), true);
+  assert.equal(texts.some((text) => /待核准跨 agent 派工/.test(text)), true);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeNotifications).length, 1);
+  assert.equal(readJsonl(agentPaths(agentHome).dispatchApprovals).at(-1).notified_at !== undefined, true);
+  assert.equal(latestV2Outbox(agentHome).find((entry) => entry.id === "v2_dashboard_flush").status, "sent");
 });
 
 test("dashboard service generator writes only a unit and dashboard lock refuses a live second owner", async () => {

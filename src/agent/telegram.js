@@ -90,13 +90,13 @@ export async function handleTelegramUpdate({ agentHome, update, memoryStateHome,
 // and `@agent ...` messages to the v2 path; returns null to fall through to v1.
 // §15.A: agent turns now run in the BACKGROUND; this function returns the start
 // ack immediately. Results arrive via the v2 outbox flushed by each poll cycle.
-async function maybeHandleV2({ agentHome, message, execFileImpl }) {
+export async function maybeHandleV2({ agentHome, message, execFileImpl, requireOwnerPolicy = true, v2Options = {} }) {
   const policy = getTelegramCodexPolicy(agentHome);
   if (!policy.v2_enabled) {
     return null;
   }
   const ownerUserId = String(message.from.id);
-  if (!isOwner({ user_id: ownerUserId }, policy)) {
+  if (requireOwnerPolicy && !isOwner({ user_id: ownerUserId }, policy)) {
     return null; // v2 is owner-only; non-owners fall through to v1.
   }
   const chatId = String(message.chat.id);
@@ -114,7 +114,7 @@ async function maybeHandleV2({ agentHome, message, execFileImpl }) {
 
   // §15.A: handleV2Message now returns immediately with the ack; the background
   // turn runs independently and writes its result to the v2 outbox.
-  const result = await handleV2Message({ agentHome, ownerUserId, chatId, text, execFileImpl });
+  const result = await handleV2Message({ agentHome, ownerUserId, chatId, text, execFileImpl, ...v2Options });
   if (!result || !result.handled) {
     return null;
   }
@@ -203,7 +203,7 @@ export function releasePollerLock(agentHome) {
 // ─── v2 outbox flush (§15.A) ──────────────────────────────────────────────────
 // Flush any pending background turn results to Telegram each poll cycle.
 
-async function sendPendingV2Outbox({ agentHome, token, request, fetchImpl }) {
+export async function sendPendingV2Outbox({ agentHome, token, request, fetchImpl }) {
   // §15.B: each poll cycle, if kill switch is on, stop all running turns.
   if (agentHome && !checkSafety(agentHome).ok) {
     await stopAllTurns();
@@ -509,7 +509,7 @@ function latestTelegramOutbox(agentHome) {
   return Array.from(latest.values());
 }
 
-async function sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl }) {
+export async function sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl }) {
   const policy = getTelegramCodexPolicy(agentHome);
   if (!policy.exchange_notify_enabled || !policy.exchange_notify_chat_id) {
     return [];
@@ -564,7 +564,7 @@ async function sendPendingExchangeNotifications({ agentHome, token, request, fet
   return sent;
 }
 
-async function sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl }) {
+export async function sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl }) {
   const sent = [];
   for (const approval of listPendingDispatchNotifications(agentHome)) {
     let send_error = null;
