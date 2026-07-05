@@ -3,21 +3,10 @@ import { scanSecrets } from "../lib/secret-scan.js";
 import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "./orchestrator.js";
-import { createTask, readTask } from "./tasks.js";
 import { realPlanRunner } from "./codex-runner.js";
 import { getExchangeThread, listExchangeInbox, listExchangeReplies, submitExchangeMessage } from "./exchange.js";
 import { getPrimaryAgentId, getTelegramCodexPolicy, isExchangeAgentEnabled, isGatewayUserAllowed, setTelegramCodexPolicy } from "./safety.js";
 import { runExchangeRunnerOnce, runnerReadiness } from "./exchange-runner.js";
-import {
-  classifyOpusAsk,
-  isOwner,
-  ownerApproveEditNotice,
-  ownerEditActionNotice,
-  ownerTaskReplyMarkup,
-  OWNER_BLOCKED_NOTICE,
-  OWNER_DANGEROUS_ACTION_NOTICE,
-  OWNER_NO_REPO_NOTICE,
-} from "./owner-mode.js";
 
 // Fire-and-forget: start the runner in the background without blocking the
 // Telegram long-poll loop. Never awaited, never throws into the caller.
@@ -226,16 +215,6 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
       if (!isExchangeAgentEnabled(agentHome, parsed.args.agent)) {
         return { ok: false, reply: `Exchange agent is not enabled: ${parsed.args.agent}` };
       }
-      // Owner @opus messages can drive plan/execute, not only review. Edit
-      // intent becomes a bounded edit task (executor=opus); dangerous intent is
-      // declined; conversation/plan/review falls through to the read-only
-      // mailbox lane below. Non-owners always stay on the read-only lane.
-      if (parsed.args.agent === "opus" && isOwner({ user_id: userId }, getTelegramCodexPolicy(agentHome))) {
-        const routed = await routeOwnerOpusAsk({ agentHome, chatId, text: parsed.args.text, memoryStateHome, runner, execFileImpl });
-        if (routed) {
-          return routed;
-        }
-      }
       const message = submitExchangeMessage({
         agentHome,
         from: getPrimaryAgentId(agentHome),
@@ -272,7 +251,7 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
     case "agent_config": {
       // Model controls are owner-only, matching the inline model buttons. A
       // gateway-allowlisted operator alone cannot switch runner models.
-      if (!isOwner({ user_id: userId }, getTelegramCodexPolicy(agentHome))) {
+      if (!isPolicyOwner(getTelegramCodexPolicy(agentHome), userId)) {
         return { ok: false, reply: "Model controls require owner authority." };
       }
       const { key, value } = parsed.args;
@@ -297,60 +276,6 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
     default:
       return { ok: false, reply: "Unknown command." };
   }
-}
-
-// Routes an owner @opus message that wants more than conversation. Returns a
-// gateway result, or null to fall through to the read-only mailbox lane.
-async function routeOwnerOpusAsk({ agentHome, chatId, text, memoryStateHome, runner, execFileImpl }) {
-  const policy = getTelegramCodexPolicy(agentHome);
-  const decision = classifyOpusAsk(text, policy);
-
-  if (decision.lane === "conversation") {
-    return null;
-  }
-  if (decision.lane === "blocked") {
-    return { ok: false, reply: OWNER_BLOCKED_NOTICE };
-  }
-  if (decision.lane === "dangerous") {
-    return { ok: true, reply: OWNER_DANGEROUS_ACTION_NOTICE };
-  }
-  // edit lanes need a repo to operate in.
-  if (!policy.default_repo) {
-    return { ok: false, reply: OWNER_NO_REPO_NOTICE };
-  }
-  const created = createTask({
-    agentHome,
-    repo: policy.default_repo,
-    request: text,
-    mode: "edit",
-    executor: "opus",
-    chatId,
-    source: "telegram",
-    requester: "owner",
-  });
-
-  if (decision.lane === "edit_approve") {
-    return {
-      ok: true,
-      taskId: created.id,
-      reply: ownerEditActionNotice(created.id),
-      reply_markup: ownerTaskReplyMarkup(created.id),
-    };
-  }
-
-  // edit_auto: low-risk — approve and run now. Still fully bounded (repo
-  // allowlist, no commit/push, verify wrapper, diff report). runner is passed
-  // through for tests; production passes none so runEditTask builds the Opus
-  // edit runner itself.
-  approveAgentTask({ agentHome, id: created.id });
-  let task = created;
-  try {
-    const run = await runAgentOnce({ agentHome, memoryStateHome, taskId: created.id, runner, execFileImpl });
-    task = run.tasks.find((entry) => entry.id === created.id) || readTask(agentHome, created.id) || created;
-  } catch {
-    task = readTask(agentHome, created.id) || created;
-  }
-  return { ok: true, taskId: created.id, reply: ownerApproveEditNotice(task) };
 }
 
 function formatAgentHelp() {
@@ -579,6 +504,11 @@ function appendGatewayAudit(agentHome, entry) {
     ...entry,
     created_at: new Date().toISOString(),
   });
+}
+
+function isPolicyOwner(policy, userId) {
+  const id = String(userId || "");
+  return Array.isArray(policy.direct_send_user_allowlist) && policy.direct_send_user_allowlist.includes(id);
 }
 
 function tokenize(text) {

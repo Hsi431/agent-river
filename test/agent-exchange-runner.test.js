@@ -134,9 +134,8 @@ test("exchange runner success completes the message and records a dispatch row",
   assert.equal(replies.length, 1);
   assert.equal(replies[0].message_id, "msg_ok");
   assert.equal(dispatch.at(-1).outcome, "replied");
-  // Send-only: the runner never creates a new exchange message or chat inbox row.
+  // Send-only: the runner never creates a new exchange message.
   assert.deepEqual(readJsonl(agentPaths(agentHome).exchangeMessages), beforeMessages);
-  assert.equal(readJsonl(agentPaths(agentHome).chatInbox).length, 0);
 });
 
 test("exchange runner creates dispatch approval from a valid final reply block", async () => {

@@ -2,23 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defaultRunnerSettingsPath, defaultOpusEditSettingsPath } from "./exchange-runner.js";
-import { getTelegramCodexPolicy } from "./safety.js";
 
-// Generates systemd --user unit/timer TEXT for the telegram-codex paths. It
-// NEVER runs systemctl, never enables/starts anything, and never writes the bot
-// token. The token is supplied by the operator via an EnvironmentFile the unit
-// references. Both modes force approval-before-send, so unattended operation only
-// ever drafts pending approvals — it does not auto-send Codex replies.
-//
-//   mode "timer"  (default, fallback): a oneshot loop run periodically by a timer.
-//   mode "bridge" (R1, near-realtime):  a long-running long-poll bridge process,
-//                                        Type=simple + Restart=always, no timer.
-
-const SERVICE_NAME = "codex-agent-telegram.service";
-const TIMER_NAME = "codex-agent-telegram.timer";
-const BRIDGE_SERVICE_NAME = "codex-agent-telegram-bridge.service";
 const ENV_FILE = "%h/.config/codex-agent/telegram.env";
-const DEFAULT_BRIDGE_LONG_POLL_SECONDS = 25;
 const SERVICE_PATH = [
   path.join(os.homedir(), ".local", "bin"),
   path.join(os.homedir(), ".npm-global", "bin"),
@@ -26,150 +11,6 @@ const SERVICE_PATH = [
   "/usr/bin",
   "/bin",
 ].join(":");
-
-export function buildTelegramCodexService({ agentHome, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds, includeMemory, mode = "timer", longPollSeconds } = {}) {
-  if (mode === "bridge") {
-    return buildBridgeService({ agentHome, repoDir, nodePath, includeMemory, longPollSeconds });
-  }
-  if (mode !== "timer") {
-    throw new Error(`Unknown service mode: ${mode}`);
-  }
-  const policy = getTelegramCodexPolicy(agentHome);
-  const interval = Number.isFinite(Number(intervalSeconds)) && Number(intervalSeconds) > 0
-    ? Math.floor(Number(intervalSeconds))
-    : (policy.global_interval_seconds || 60);
-  const useMemory = includeMemory === undefined ? Boolean(policy.memory_enabled) : Boolean(includeMemory);
-  const memoryState = path.join(os.homedir(), ".codex", "memory-river");
-
-  const args = [
-    path.join(repoDir, "bin", "codex-agent.js"),
-    "telegram-codex-loop",
-    "--state", agentHome,
-    "--transport", "curl",
-    "--allow-real-codex",
-    "--iterations", "1",
-    "--sleep-seconds", "0",
-  ];
-  if (useMemory) {
-    args.push("--memory-state", memoryState);
-  }
-  const execStart = `${nodePath} ${args.join(" ")}`;
-
-  const unit = [
-    "[Unit]",
-    "Description=Codex Agent Telegram bounded loop (approval-before-send only)",
-    "",
-    "[Service]",
-    "Type=oneshot",
-    `WorkingDirectory=${repoDir}`,
-    `EnvironmentFile=${ENV_FILE}`,
-    `Environment=PATH=${SERVICE_PATH}`,
-    `ExecStart=${execStart}`,
-    "",
-  ].join("\n");
-
-  const timer = [
-    "[Unit]",
-    "Description=Run the Codex Agent Telegram bounded loop periodically",
-    "",
-    "[Timer]",
-    "OnBootSec=60",
-    `OnUnitActiveSec=${interval}`,
-    `Unit=${SERVICE_NAME}`,
-    "Persistent=false",
-    "",
-    "[Install]",
-    "WantedBy=timers.target",
-    "",
-  ].join("\n");
-
-  return {
-    mode: "timer",
-    unit_name: SERVICE_NAME,
-    timer_name: TIMER_NAME,
-    env_file: ENV_FILE,
-    interval_seconds: interval,
-    memory: useMemory,
-    unit,
-    timer,
-  };
-}
-
-function buildBridgeService({ agentHome, repoDir, nodePath, includeMemory, longPollSeconds }) {
-  const policy = getTelegramCodexPolicy(agentHome);
-  const useMemory = includeMemory === undefined ? Boolean(policy.memory_enabled) : Boolean(includeMemory);
-  const memoryState = path.join(os.homedir(), ".codex", "memory-river");
-  const longPoll = Number.isFinite(Number(longPollSeconds)) && Number(longPollSeconds) >= 0
-    ? Math.floor(Number(longPollSeconds))
-    : DEFAULT_BRIDGE_LONG_POLL_SECONDS;
-
-  const args = [
-    path.join(repoDir, "bin", "codex-agent.js"),
-    "telegram-codex-bridge",
-    "--state", agentHome,
-    "--transport", "curl",
-    "--allow-real-codex",
-    "--long-poll-seconds", String(longPoll),
-  ];
-  if (useMemory) {
-    args.push("--memory-state", memoryState);
-  }
-  const execStart = `${nodePath} ${args.join(" ")}`;
-
-  const unit = [
-    "[Unit]",
-    "Description=Codex Agent Telegram bridge (long-poll, approval-before-send only)",
-    "",
-    "[Service]",
-    "Type=simple",
-    `WorkingDirectory=${repoDir}`,
-    `EnvironmentFile=${ENV_FILE}`,
-    `Environment=PATH=${SERVICE_PATH}`,
-    `ExecStart=${execStart}`,
-    "Restart=always",
-    "RestartSec=5",
-    "",
-    "[Install]",
-    "WantedBy=default.target",
-    "",
-  ].join("\n");
-
-  return {
-    mode: "bridge",
-    unit_name: BRIDGE_SERVICE_NAME,
-    timer_name: null,
-    env_file: ENV_FILE,
-    long_poll_seconds: longPoll,
-    memory: useMemory,
-    unit,
-    timer: null,
-  };
-}
-
-export function writeTelegramCodexService({ agentHome, dir, repoDir, intervalSeconds, includeMemory, mode = "timer", longPollSeconds } = {}) {
-  if (!dir) {
-    throw new Error("Missing required --dir");
-  }
-  const built = buildTelegramCodexService({ agentHome, repoDir, intervalSeconds, includeMemory, mode, longPollSeconds });
-  fs.mkdirSync(dir, { recursive: true });
-  const unitPath = path.join(dir, built.unit_name);
-  fs.writeFileSync(unitPath, built.unit);
-  let timerPath = null;
-  if (built.timer && built.timer_name) {
-    timerPath = path.join(dir, built.timer_name);
-    fs.writeFileSync(timerPath, built.timer);
-  }
-  return {
-    mode: built.mode,
-    unit_path: unitPath,
-    timer_path: timerPath,
-    unit_name: built.unit_name,
-    timer_name: built.timer_name,
-    env_file: built.env_file,
-    note: "Files written but NOT enabled. This tool never runs systemctl.",
-    next_steps: telegramCodexServiceStatus({ dir, mode: built.mode }).commands,
-  };
-}
 
 // ── Opus exchange auto-runner service ────────────────────────────────────────
 //
@@ -588,43 +429,6 @@ export function dashboardServiceStatus({ dir, agentHome, repoDir = process.cwd()
       enable: `systemctl --user enable --now ${DASHBOARD_SERVICE_NAME}`,
       disable: `systemctl --user disable --now ${DASHBOARD_SERVICE_NAME}`,
       logs: `journalctl --user -u ${DASHBOARD_SERVICE_NAME}`,
-    },
-  };
-}
-
-export function telegramCodexServiceStatus({ dir, mode = "timer" } = {}) {
-  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
-  if (mode === "bridge") {
-    const unitPath = path.join(targetDir, BRIDGE_SERVICE_NAME);
-    return {
-      mode: "bridge",
-      dir: targetDir,
-      unit: { name: BRIDGE_SERVICE_NAME, path: unitPath, exists: fs.existsSync(unitPath) },
-      timer: null,
-      env_file: ENV_FILE,
-      note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
-      commands: {
-        reload: "systemctl --user daemon-reload",
-        enable: `systemctl --user enable --now ${BRIDGE_SERVICE_NAME}`,
-        disable: `systemctl --user disable --now ${BRIDGE_SERVICE_NAME}`,
-        logs: `journalctl --user -u ${BRIDGE_SERVICE_NAME}`,
-      },
-    };
-  }
-  const unitPath = path.join(targetDir, SERVICE_NAME);
-  const timerPath = path.join(targetDir, TIMER_NAME);
-  return {
-    mode: "timer",
-    dir: targetDir,
-    unit: { name: SERVICE_NAME, path: unitPath, exists: fs.existsSync(unitPath) },
-    timer: { name: TIMER_NAME, path: timerPath, exists: fs.existsSync(timerPath) },
-    env_file: ENV_FILE,
-    note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
-    commands: {
-      reload: "systemctl --user daemon-reload",
-      enable: `systemctl --user enable --now ${TIMER_NAME}`,
-      disable: `systemctl --user disable --now ${TIMER_NAME}`,
-      logs: `journalctl --user -u ${SERVICE_NAME}`,
     },
   };
 }

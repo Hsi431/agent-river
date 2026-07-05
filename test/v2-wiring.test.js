@@ -17,9 +17,7 @@ function msgUpdate({ updateId = 1, fromId, chatId, text }) {
 
 function makeOwner(agentHome, userId, extra = {}) {
   setTelegramCodexPolicy(agentHome, {
-    direct_send_enabled: true,
     direct_send_user_add: String(userId),
-    owner_mode_enabled: true,
     ...extra,
   });
 }

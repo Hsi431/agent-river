@@ -20,7 +20,7 @@ import {
 } from "../src/agent/v2/kill.js";
 import { handleV2Message } from "../src/agent/v2/poller.js";
 import { makeClaudeAdapter } from "../src/agent/v2/agent-adapter.js";
-import { telegramCodexBridge } from "../src/agent/telegram-codex-bridge.js";
+import { acquirePollerLock, releasePollerLock } from "../src/agent/telegram.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { setTelegramCodexPolicy } from "../src/agent/safety.js";
 
@@ -136,9 +136,8 @@ test("§15.B/C: stopAllTurns terminates a registered real child and clears the r
 
 // ─── B2 §15.H: bridge wires the cross-process poller lock ──────────────────────
 
-test("§15.H: telegramCodexBridge refuses to start when a live poller lock exists", async () => {
+test("§15.H: poller lock refuses to start when a live poller lock exists", () => {
   const agentHome = makeAgentHome("v2-bridge-lock-");
-  setTelegramCodexPolicy(agentHome, { enabled: true, require_approval: true });
 
   // Pre-write a live lock (our own pid → the holder is alive).
   const lockPath = agentPaths(agentHome).v2PollerLock;
@@ -148,42 +147,20 @@ test("§15.H: telegramCodexBridge refuses to start when a live poller lock exist
     JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }),
   );
 
-  let onceCalled = false;
-  await assert.rejects(
-    () =>
-      telegramCodexBridge({
-        agentHome,
-        allowRealCodex: true,
-        maxCycles: 1,
-        token: "x",
-        onceImpl: async () => {
-          onceCalled = true;
-          return {};
-        },
-        sleepImpl: async () => {},
-      }),
+  assert.throws(
+    () => acquirePollerLock(agentHome),
     /poller already running/i,
   );
-  assert.equal(onceCalled, false, "must refuse before running any poll cycle");
   fs.unlinkSync(lockPath);
 });
 
-test("§15.H: telegramCodexBridge holds the lock while running and releases on exit", async () => {
+test("§15.H: poller lock can be held and released", () => {
   const agentHome = makeAgentHome("v2-bridge-lock2-");
-  setTelegramCodexPolicy(agentHome, { enabled: true, require_approval: true });
   const lockPath = agentPaths(agentHome).v2PollerLock;
 
-  await telegramCodexBridge({
-    agentHome,
-    allowRealCodex: true,
-    maxCycles: 1,
-    token: "x",
-    onceImpl: async () => {
-      assert.equal(fs.existsSync(lockPath), true, "lock must be held during the poll loop");
-      return {};
-    },
-    sleepImpl: async () => {},
-  });
+  acquirePollerLock(agentHome);
+  assert.equal(fs.existsSync(lockPath), true, "lock must be held");
+  releasePollerLock(agentHome);
 
   assert.equal(fs.existsSync(lockPath), false, "lock must be released on clean exit");
 });
