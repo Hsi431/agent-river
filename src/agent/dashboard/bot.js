@@ -14,6 +14,7 @@ import {
 import { collectDashboardFeed, initializeDashboardCursor, loadDashboardCursor, saveDashboardCursor } from "./feed.js";
 import { createDashboardTelegramClient } from "./client.js";
 import { dashboardHint, handleDashboardCommand, isDashboardOwner } from "./commands.js";
+import { submitSessionEditTask } from "./session-task.js";
 
 const DEFAULT_LONG_POLL_SECONDS = 25;
 const DEFAULT_SLEEP_SECONDS = 1;
@@ -218,6 +219,13 @@ async function handleDashboardCallback({ agentHome, client, callback }) {
   try {
     if (parsed.kind === "join") {
       notice = handleJoinCallback({ agentHome, action: parsed.action, name: parsed.name });
+    } else if (parsed.kind === "task") {
+      const result = await submitSessionEditTask({
+        agentHome,
+        sessionId: parsed.sessionId,
+        chatId: callback.message?.chat?.id || null,
+      });
+      notice = result.text;
     } else {
       const task = parsed.action === "approve"
         ? approveAgentTask({ agentHome, id: parsed.taskId })
@@ -229,6 +237,8 @@ async function handleDashboardCallback({ agentHome, client, callback }) {
   } catch {
     if (parsed.kind === "join") {
       notice = parsed.action === "approve" ? "無法核准" : "無法拒絕";
+    } else if (parsed.kind === "task") {
+      notice = "無法轉 edit task";
     } else {
       notice = parsed.action === "approve" ? "無法放行" : "無法拒絕";
     }
@@ -267,7 +277,11 @@ function parseDashboardCallback(data) {
     return { kind: "gate", action: gate[1], taskId: gate[2] };
   }
   const join = raw.match(/^join:(approve|reject):([a-z][a-z0-9_-]*)$/);
-  return join ? { kind: "join", action: join[1], name: join[2] } : null;
+  if (join) {
+    return { kind: "join", action: join[1], name: join[2] };
+  }
+  const task = raw.match(/^task:from-session:([A-Za-z0-9_-]+)$/);
+  return task ? { kind: "task", sessionId: task[1] } : null;
 }
 
 function isPidAlive(pid) {

@@ -93,6 +93,14 @@ export function joinMarkup(name) {
   };
 }
 
+export function sessionTaskMarkup(sessionId) {
+  return {
+    inline_keyboard: [[
+      { text: "轉 edit task", callback_data: `task:from-session:${sessionId}` },
+    ]],
+  };
+}
+
 function sessionEvents(agentHome, file, cursor, skipOpenedSessionIds) {
   return readJsonlSince(file, cursor.ledgers.sessions)
     .filter((event) => event.event === "session_opened" || event.event === "session_closed")
@@ -115,6 +123,7 @@ function sessionEvents(agentHome, file, cursor, skipOpenedSessionIds) {
         kind: "session",
         created_at: event.closed_at || event.created_at || "",
         text: `session #${code} 收場 reason=${event.reason || session.closed_reason || "ok"},逐字稿:${transcript.path}\n最後一封信:\n${redactSecrets(last?.text || "")}`,
+        ...(session.repo ? { reply_markup: sessionTaskMarkup(event.session_id) } : {}),
       };
     });
 }
@@ -306,7 +315,7 @@ function oneLine(text, maxChars) {
   return raw.length > maxChars ? `${raw.slice(0, Math.max(0, maxChars - 3))}...` : raw;
 }
 
-function writeSessionTranscript(agentHome, sessionId) {
+export function writeSessionTranscript(agentHome, sessionId) {
   const paths = agentPaths(agentHome);
   const file = path.join(paths.sessionTranscriptsDir, `${sessionId}.md`);
   if (fs.existsSync(file)) {
@@ -370,7 +379,7 @@ function transcriptMarkdown(agentHome, sessionId) {
   return [`# Session Transcript ${sessionId}`, "", body].join("\n").trimEnd() + "\n";
 }
 
-function lastSessionMail(agentHome, sessionId) {
+export function lastSessionMail(agentHome, sessionId) {
   const paths = agentPaths(agentHome);
   const messages = readJsonl(paths.exchangeMessages);
   const messagesById = new Map(messages.map((message) => [message.id, message]));

@@ -1,15 +1,15 @@
 import { shortHash } from "../../lib/hash.js";
-import { readJsonl } from "../../lib/jsonl.js";
 import { redactSecrets } from "../../lib/secret-scan.js";
 import { listRegisteredAgents } from "../registry.js";
 import { getTelegramCodexPolicy, setTelegramCodexPolicy } from "../safety.js";
 import { getSession, killSession, listActiveSessions, openSession } from "../sessions.js";
-import { agentPaths } from "../paths.js";
 import { kickoffSession, submitExchangeMessage } from "../exchange.js";
+import { resolveAnySessionId, submitSessionEditTask } from "./session-task.js";
 
-const DASHBOARD_HINT = "這是 v3 看板,指令:/session /say /sessions /kill /agents /model";
+const DASHBOARD_HINT = "這是 v3 看板,指令:/session /say /task /sessions /kill /agents /model";
 const SESSION_USAGE = "用法:/session <a,b[,c]> [repo=<名>] [budget=<N>/<M>] [write=<agent>] -- <題目>";
 const SAY_USAGE = "用法:/say <session短碼或id> <話>";
+const TASK_USAGE = "用法:/task <session短碼或id> [repo=<名>]";
 const SESSION_TOPIC_SEPARATOR = / (?:--|—|–) /u;
 
 export async function handleDashboardCommand({ agentHome, text, execFileImpl } = {}) {
@@ -42,6 +42,9 @@ export async function handleDashboardCommand({ agentHome, text, execFileImpl } =
   if (raw.startsWith("/say ")) {
     return handleSayCommand(agentHome, raw);
   }
+  if (raw.startsWith("/task ")) {
+    return handleTaskCommand({ agentHome, raw, execFileImpl });
+  }
   if (raw === "/model" || raw.startsWith("/model ")) {
     return handleModelCommand(agentHome, raw);
   }
@@ -72,6 +75,36 @@ export async function handleDashboardCommand({ agentHome, text, execFileImpl } =
     return registry.map((agent) => `${agent.name} ${agent.status || "unknown"}`).join("\n");
   }
   return DASHBOARD_HINT;
+}
+
+async function handleTaskCommand({ agentHome, raw, execFileImpl }) {
+  const parts = raw.split(/\s+/).filter(Boolean);
+  if (parts.length < 2 || parts.length > 3) {
+    return TASK_USAGE;
+  }
+  const found = resolveAnySessionId(agentHome, parts[1]);
+  if (!found) {
+    return "找不到 session";
+  }
+  let repo = null;
+  if (parts[2]) {
+    if (!parts[2].startsWith("repo=")) {
+      return TASK_USAGE;
+    }
+    repo = parts[2];
+  }
+  try {
+    const result = await submitSessionEditTask({
+      agentHome,
+      sessionId: found.session_id,
+      repo,
+      execFileImpl,
+    });
+    return result.text;
+  } catch (error) {
+    const line = describeSessionError(error);
+    return line ? `${line}\n${TASK_USAGE}` : TASK_USAGE;
+  }
 }
 
 export function isDashboardOwner(agentHome, userId) {
@@ -238,13 +271,6 @@ function commandError(code, message, details = {}) {
 function resolveSessionId(agentHome, input) {
   const raw = String(input || "").trim();
   return listActiveSessions(agentHome).find((session) => session.session_id === raw || shortSession(session.session_id) === raw) || null;
-}
-
-function resolveAnySessionId(agentHome, input) {
-  const raw = String(input || "").trim();
-  const opened = readJsonl(agentPaths(agentHome).sessions)
-    .filter((row) => row.event === "session_opened" && row.session_id);
-  return opened.find((row) => row.session_id === raw || shortSession(row.session_id) === raw) || null;
 }
 
 function shortSession(id) {

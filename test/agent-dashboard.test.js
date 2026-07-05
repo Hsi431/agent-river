@@ -9,7 +9,7 @@ import { allowGatewayUser, enableExchangeAgent, setTelegramCodexPolicy } from ".
 import { closeSession, openSession } from "../src/agent/sessions.js";
 import { claimExchangeMessage, kickoffSession, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
 import { createDispatchApproval } from "../src/agent/dispatch.js";
-import { createTask, readTask } from "../src/agent/tasks.js";
+import { createTask, listTasks, readTask } from "../src/agent/tasks.js";
 import { appendJsonl, readJsonl } from "../src/lib/jsonl.js";
 import { acquireDashboardLock, dashboardOnce, releaseDashboardLock } from "../src/agent/dashboard/bot.js";
 import { collectDashboardFeed, initializeDashboardCursor } from "../src/agent/dashboard/feed.js";
@@ -204,6 +204,152 @@ test("dashboard feed writes closed-session transcript once and includes path plu
   assert.match(fs.readFileSync(transcriptPath, "utf8"), /U9_IDEMPOTENT_MARKER/);
 });
 
+test("closed session feed offers edit-task conversion only when the session has a repo", async () => {
+  const agentHome = makeAgentHome("u10-dashboard-close-task-button-");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_user_add: "123",
+    exchange_notify_chat_id: "456",
+    default_repo: process.cwd(),
+  });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const withRepo = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    repo: process.cwd(),
+    budgetMessages: 6,
+    budgetMinutes: 20,
+    topic: "U10_WITH_REPO_CLOSE_BUTTON topic",
+  });
+  const withoutRepo = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 6,
+    budgetMinutes: 20,
+    topic: "U10_WITHOUT_REPO_CLOSE_BUTTON topic",
+  });
+  const cursor = initializeDashboardCursor(agentHome);
+  closeSession({ agentHome, id: withRepo.session_id, reason: "ok" });
+  closeSession({ agentHome, id: withoutRepo.session_id, reason: "ok" });
+
+  const feed = collectDashboardFeed(agentHome, { cursor });
+  const withRepoEvent = feed.events.find((event) => event.text.includes(withRepo.session_id));
+  const withoutRepoEvent = feed.events.find((event) => event.text.includes(withoutRepo.session_id));
+
+  assert.equal(withRepoEvent.reply_markup.inline_keyboard[0][0].text, "轉 edit task");
+  assert.equal(withRepoEvent.reply_markup.inline_keyboard[0][0].callback_data, `task:from-session:${withRepo.session_id}`);
+  assert.equal(withoutRepoEvent.reply_markup, undefined);
+});
+
+test("session task callback creates a pending codex edit task and next feed gate", async () => {
+  const agentHome = makeAgentHome("u10-dashboard-task-callback-");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_user_add: "123",
+    exchange_notify_chat_id: "456",
+    default_repo: process.cwd(),
+  });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    repo: process.cwd(),
+    budgetMessages: 8,
+    budgetMinutes: 20,
+    topic: "U10_CALLBACK_TOPIC_TOKEN turn this conclusion into edits.",
+  });
+  const message = submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    sessionId: session.session_id,
+    text: "U10_CALLBACK_MESSAGE_TOKEN request body",
+  });
+  claimExchangeMessage({ agentHome, id: message.id, agent: "opus" });
+  replyExchangeMessage({
+    agentHome,
+    id: message.id,
+    agent: "opus",
+    text: "U10_CALLBACK_FINAL_MAIL_TOKEN final conclusion body",
+  });
+  const cursor = initializeDashboardCursor(agentHome);
+  closeSession({ agentHome, id: session.session_id, reason: "ok" });
+  collectDashboardFeed(agentHome, { cursor });
+  const calls = [];
+
+  const result = await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramCallbackUpdate({ updateId: 60, fromId: 999, chatId: 456, data: `task:from-session:${session.session_id}` }),
+      telegramCallbackUpdate({ updateId: 61, fromId: 123, chatId: 456, data: `task:from-session:${session.session_id}` }),
+    ]]),
+  });
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body);
+  const tasks = listTasks(agentHome).filter((task) => String(task.request || "").includes(`[session:${session.session_id}]`));
+  const task = tasks[0];
+
+  assert.equal(answers[0], "唯讀");
+  assert.match(answers[1], /^已建立 edit task task_/);
+  assert.equal(tasks.length, 1);
+  assert.equal(task.executor, "codex");
+  assert.equal(task.mode, "edit");
+  assert.equal(task.repo, process.cwd());
+  assert.equal(task.status, "queued");
+  assert.equal(task.approval, "pending");
+  assert.match(task.request, /U10_CALLBACK_TOPIC_TOKEN/);
+  assert.match(task.request, /U10_CALLBACK_FINAL_MAIL_TOKEN final conclusion body/);
+  assert.match(task.request, new RegExp(`完整逐字稿:.*${session.session_id}\\.md`));
+  assert.match(task.request, new RegExp(`\\[session:${session.session_id}\\]`));
+  assert.equal(result.feed.some((event) => event.kind === "gate" && event.task_id === task.id), true);
+  assert.equal(sent.some((body) => body.text.includes(`硬閘 edit task ${task.id}`) && body.reply_markup.inline_keyboard[0][0].callback_data === `gate:approve:${task.id}`), true);
+});
+
+test("dashboard /task handles missing repo, repo override, and duplicate conversion notice", async () => {
+  const agentHome = makeAgentHome("u10-dashboard-task-command-");
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_user_add: "123",
+    default_repo: process.cwd(),
+  });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 6,
+    budgetMinutes: 20,
+    topic: "U10_TASK_COMMAND_TOPIC_TOKEN active session without repo.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    sessionId: session.session_id,
+    text: "U10_TASK_COMMAND_LAST_MAIL_TOKEN",
+  });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramMessageUpdate({ updateId: 70, fromId: 123, chatId: 456, text: `/task ${session.session_id}` }),
+      telegramMessageUpdate({ updateId: 71, fromId: 123, chatId: 456, text: `/task ${session.session_id} repo=${process.cwd()}` }),
+      telegramMessageUpdate({ updateId: 72, fromId: 123, chatId: 456, text: `/task ${session.session_id} repo=${process.cwd()}` }),
+    ]]),
+  });
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+  const tasks = listTasks(agentHome).filter((task) => String(task.request || "").includes(`[session:${session.session_id}]`));
+
+  assert.equal(sent[0], `這場沒綁 repo,用 /task ${session.session_id} repo=<名> 指定`);
+  assert.match(sent[1], /^已建立 edit task task_/);
+  assert.match(sent[2], new RegExp(`^已建立 edit task task_.*\\n注意:此 session 已轉過 ${tasks[0].id}`));
+  assert.equal(tasks.length, 2);
+  assert.equal(tasks.every((task) => task.repo === process.cwd() && task.approval === "pending"), true);
+});
+
 test("dashboard skips same-cycle /session opened feed but still reports CLI-opened sessions", async () => {
   const agentHome = makeAgentHome("u9-dashboard-open-dedupe-");
   setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123", exchange_notify_chat_id: "456" });
@@ -307,7 +453,7 @@ test("dashboard rejects non-owner messages and strict parser failures", async ()
 
   assert.equal(sent[0], "唯讀");
   assert.match(sent[1], /^找不到題目分隔符,參與者後面接 ` -- `\(兩個減號\)再接題目;直接打 — 也可以\n用法:\/session/);
-  assert.equal(sent[2], "這是 v3 看板,指令:/session /say /sessions /kill /agents /model");
+  assert.equal(sent[2], "這是 v3 看板,指令:/session /say /task /sessions /kill /agents /model");
   assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
 });
 
