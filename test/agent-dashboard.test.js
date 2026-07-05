@@ -131,8 +131,67 @@ test("dashboard rejects non-owner messages and strict parser failures", async ()
 
   assert.equal(sent[0], "唯讀");
   assert.match(sent[1], /^用法:\/session/);
-  assert.equal(sent[2], "這是 v3 看板,指令:/session /sessions /kill /agents");
+  assert.equal(sent[2], "這是 v3 看板,指令:/session /sessions /kill /agents /model");
   assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
+});
+
+test("dashboard /session reports validation errors with concrete details", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-session-errors-");
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-session-ws-"));
+  setTelegramCodexPolicy(agentHome, {
+    direct_send_user_add: "123",
+    workspace_root: workspace,
+  });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramMessageUpdate({ updateId: 23, fromId: 123, chatId: 456, text: "/session codex,opus -- abcd" }),
+      telegramMessageUpdate({ updateId: 24, fromId: 123, chatId: 456, text: "/session codex,foo -- abcde" }),
+      telegramMessageUpdate({ updateId: 25, fromId: 123, chatId: 456, text: "/session codex,opus budget=bad -- abcde" }),
+      telegramMessageUpdate({ updateId: 26, fromId: 123, chatId: 456, text: "/session codex,opus repo=missing -- abcde" }),
+    ]]),
+  });
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+
+  assert.match(sent[0], /^題目太短:4 字,owner 開場至少 5 字\n用法:\/session/);
+  assert.match(sent[1], /^參與者 foo 未註冊,現有:codex,opus\n用法:\/session/);
+  assert.match(sent[2], /^預算格式錯誤:bad,請用 N\/M\n用法:\/session/);
+  assert.match(sent[3], /^repo 解析失敗:missing,原因:找不到 repo\n用法:\/session/);
+  assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
+});
+
+test("dashboard /model displays and updates runner policy for owners only", async () => {
+  const agentHome = makeAgentHome("codex-agent-dashboard-model-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramMessageUpdate({ updateId: 27, fromId: 123, chatId: 456, text: "/model" }),
+      telegramMessageUpdate({ updateId: 28, fromId: 123, chatId: 456, text: "/model opus opus" }),
+      telegramMessageUpdate({ updateId: 29, fromId: 123, chatId: 456, text: "/model codex gpt-5-codex" }),
+      telegramMessageUpdate({ updateId: 30, fromId: 999, chatId: 456, text: "/model opus sonnet" }),
+      telegramMessageUpdate({ updateId: 31, fromId: 123, chatId: 456, text: "/model opus llama" }),
+      telegramMessageUpdate({ updateId: 32, fromId: 123, chatId: 456, text: "/model" }),
+    ]]),
+  });
+  const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
+  const config = JSON.parse(fs.readFileSync(agentPaths(agentHome).config, "utf8"));
+
+  assert.equal(sent[0], "opus runner: sonnet\ncodex runner: (codex CLI 預設)");
+  assert.equal(sent[1], "opus runner 已設為 opus");
+  assert.equal(sent[2], "codex runner 已設為 gpt-5-codex");
+  assert.equal(sent[3], "唯讀");
+  assert.match(sent[4], /^設定失敗:--exchange-runner-model must be default, sonnet, or opus/);
+  assert.equal(sent[5], "opus runner: opus\ncodex runner: gpt-5-codex");
+  assert.equal(config.telegram_codex_policy.exchange_runner_model, "opus");
+  assert.equal(config.telegram_codex_policy.codex_runner_model, "gpt-5-codex");
 });
 
 test("dashboard routes owner @agent messages through v2 and flushes the background outbox", async () => {

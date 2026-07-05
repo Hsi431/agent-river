@@ -17,7 +17,7 @@ v1 遙控線 6/7 後流量為零;exchange mailbox 是唯一被真實使用的部
 新 ledger:`~/.codex/agent/sessions.jsonl`(append-only,狀態以最後一筆 event 為準)。
 
 Session 欄位(鎖定):
-- `session_id`(唯一)、`topic`(20–500 字)、`initiator`(`owner` 或 `agent:<name>`)
+- `session_id`(唯一)、`topic`(owner 5–500 字;agent 發起 20–500 字)、`initiator`(`owner` 或 `agent:<name>`)
 - `participants`:已註冊 agent 名單的子集,≥2 名(initiator 為 agent 時自動列入)
 - `repo`(可選;必須在 `workspace_root` 內,沿用既有 repo-resolver 規則)
 - `budget`:`{max_messages, max_minutes}`。owner 發起預設 10 封/30 分;**agent 發起固定上限 6 封/20 分,不可調高**

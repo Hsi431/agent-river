@@ -9,7 +9,8 @@ const OWNER_DEFAULT_MESSAGES = 10;
 const OWNER_DEFAULT_MINUTES = 30;
 const AGENT_MAX_MESSAGES = 6;
 const AGENT_MAX_MINUTES = 20;
-const TOPIC_MIN = 20;
+const OWNER_TOPIC_MIN = 5;
+const AGENT_TOPIC_MIN = 20;
 const TOPIC_MAX = 500;
 const VALID_AGENT = /^[a-z][a-z0-9_-]*$/;
 const VALID_STATES = new Set(["active", "closed_ok", "exhausted", "killed"]);
@@ -36,7 +37,7 @@ export async function openSession({
     names.add(normalizedInitiator.slice("agent:".length));
   }
   validateParticipants(names, allowed);
-  const normalizedTopic = normalizeTopic(topic);
+  const normalizedTopic = normalizeTopic(topic, normalizedInitiator);
   const budget = normalizeBudget({ initiator: normalizedInitiator, budgetMessages, budgetMinutes });
   const normalizedWriteAccess = normalizeWriteAccess(writeAccess, {
     initiator: normalizedInitiator,
@@ -286,7 +287,10 @@ async function resolveSessionRepo({ agentHome, repo, execFileImpl }) {
     execFileImpl,
   });
   if (!resolved.ok) {
-    throw new Error(`session_repo_${resolved.reason}`);
+    throw sessionError("repo_resolve_failed", `Session repo could not be resolved: ${raw}`, {
+      repo: raw,
+      reason: resolved.reason,
+    });
   }
   return resolved.toplevel;
 }
@@ -313,15 +317,24 @@ function validateParticipants(participants, allowed) {
   }
   for (const name of participants) {
     if (!VALID_AGENT.test(name) || !allowed.has(name)) {
-      throw new Error(`Session participant is not registered: ${name}`);
+      throw sessionError("participant_not_registered", `Session participant is not registered: ${name}`, {
+        participant: name,
+        allowed: [...allowed].sort(),
+      });
     }
   }
 }
 
-function normalizeTopic(value) {
+function normalizeTopic(value, initiator) {
   const topic = String(value || "").trim();
-  if (topic.length < TOPIC_MIN || topic.length > TOPIC_MAX) {
-    throw new Error(`Session topic must be ${TOPIC_MIN}-${TOPIC_MAX} characters`);
+  const min = initiator.startsWith("agent:") ? AGENT_TOPIC_MIN : OWNER_TOPIC_MIN;
+  if (topic.length < min || topic.length > TOPIC_MAX) {
+    throw sessionError("topic_length", `Session topic must be ${min}-${TOPIC_MAX} characters`, {
+      length: topic.length,
+      min,
+      max: TOPIC_MAX,
+      initiator,
+    });
   }
   return topic;
 }
@@ -383,13 +396,20 @@ function stateForReason(reason) {
 function requirePositiveInteger(value, name) {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) {
+    if (name.startsWith("budget-")) {
+      throw sessionError("budget_format", `--${name} must be a positive integer`, {
+        value: String(value ?? ""),
+        field: name,
+      });
+    }
     throw new Error(`--${name} must be a positive integer`);
   }
   return n;
 }
 
-function sessionError(code, message) {
+function sessionError(code, message, details = {}) {
   const error = new Error(`${code}: ${message}`);
   error.code = code;
+  error.details = details;
   return error;
 }

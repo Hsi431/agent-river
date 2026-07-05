@@ -62,6 +62,32 @@ test("agent-opened sessions auto-include the initiator, clamp budget, and force 
   assert.deepEqual(rows[0].requested_budget, { max_messages: 99, max_minutes: 99 });
 });
 
+test("owner sessions accept five-character topics but agent-opened sessions require twenty", async () => {
+  const agentHome = makeAgentHome("u5-session-topic-min-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+
+  const ownerSession = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    topic: "abcde",
+  });
+
+  await assert.rejects(
+    () => openSession({
+      agentHome,
+      initiator: "agent:opus",
+      participants: "codex",
+      topic: "abcde",
+    }),
+    (error) => error.code === "topic_length"
+      && error.details.length === 5
+      && error.details.min === 20,
+  );
+  assert.equal(ownerSession.topic, "abcde");
+  assert.equal(readJsonl(agentPaths(agentHome).sessions).length, 1);
+});
+
 test("session exchange submit and reply both attach session_id and consume message budget", async () => {
   const agentHome = makeAgentHome("u1-session-budget-");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
