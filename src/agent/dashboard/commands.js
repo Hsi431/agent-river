@@ -6,6 +6,7 @@ import { killSession, listActiveSessions, openSession } from "../sessions.js";
 
 const DASHBOARD_HINT = "這是 v3 看板,指令:/session /sessions /kill /agents /model";
 const SESSION_USAGE = "用法:/session <a,b[,c]> [repo=<名>] [budget=<N>/<M>] [write=<agent>] -- <題目>";
+const SESSION_TOPIC_SEPARATOR = / (?:--|—|–) /u;
 
 export async function handleDashboardCommand({ agentHome, text, execFileImpl } = {}) {
   const raw = String(text || "").trim();
@@ -72,23 +73,23 @@ export function dashboardHint() {
 }
 
 function parseSessionCommand(raw) {
-  const sep = raw.indexOf(" -- ");
-  if (sep === -1) {
-    throw new Error("missing_topic_separator");
+  const sep = raw.match(SESSION_TOPIC_SEPARATOR);
+  if (!sep) {
+    throw commandError("missing_topic_separator", "Missing topic separator");
   }
-  const head = raw.slice("/session ".length, sep).trim();
-  const topic = raw.slice(sep + 4).trim();
+  const head = raw.slice("/session ".length, sep.index).trim();
+  const topic = raw.slice(sep.index + sep[0].length).trim();
   const parts = head.split(/\s+/).filter(Boolean);
   const participants = parts.shift();
   if (!participants) {
-    throw new Error("missing_participants");
+    throw commandError("missing_participants", "Missing participants");
   }
   const out = { participants, repo: null, budgetMessages: undefined, budgetMinutes: undefined, writeAccess: undefined, topic };
   for (const item of parts) {
     const [key, ...rest] = item.split("=");
     const value = rest.join("=");
     if (!key || !value) {
-      throw new Error("bad_option");
+      throw commandError("bad_option", "Bad option", { option: item });
     }
     if (key === "repo") {
       out.repo = value;
@@ -102,7 +103,7 @@ function parseSessionCommand(raw) {
       out.budgetMessages = match[1];
       out.budgetMinutes = match[2];
     } else {
-      throw new Error("bad_option");
+      throw commandError("bad_option", "Bad option", { option: item });
     }
   }
   return out;
@@ -113,21 +114,21 @@ function handleModelCommand(agentHome, raw) {
   if (parts.length === 1) {
     const policy = getTelegramCodexPolicy(agentHome);
     return [
-      `opus runner: ${policy.exchange_runner_model}`,
+      `claude runner(信箱名 opus): ${policy.exchange_runner_model}`,
       `codex runner: ${policy.codex_runner_model || "(codex CLI 預設)"}`,
     ].join("\n");
   }
-  if (parts.length !== 3 || !["opus", "codex"].includes(parts[1])) {
-    return "用法:/model [opus|codex <值>]";
+  if (parts.length !== 3 || !["claude", "opus", "codex"].includes(parts[1])) {
+    return "用法:/model [claude|codex <值>]";
   }
-  const target = parts[1];
+  const target = parts[1] === "opus" ? "claude" : parts[1];
   const value = parts[2] === "default" ? "" : parts[2];
   try {
-    const policy = setTelegramCodexPolicy(agentHome, target === "opus"
+    const policy = setTelegramCodexPolicy(agentHome, target === "claude"
       ? { exchange_runner_model: value }
       : { codex_runner_model: value });
-    if (target === "opus") {
-      return `opus runner 已設為 ${policy.telegram_codex_policy.exchange_runner_model || "(Claude Code 預設)"}`;
+    if (target === "claude") {
+      return `claude runner 已設為 ${policy.telegram_codex_policy.exchange_runner_model || "(Claude Code 預設)"}`;
     }
     return `codex runner 已設為 ${policy.telegram_codex_policy.codex_runner_model || "(codex CLI 預設)"}`;
   } catch (error) {
@@ -137,6 +138,15 @@ function handleModelCommand(agentHome, raw) {
 
 function describeSessionError(error) {
   const details = error?.details || {};
+  if (error?.code === "missing_topic_separator") {
+    return "找不到題目分隔符,參與者後面接 ` -- `(兩個減號)再接題目;直接打 — 也可以";
+  }
+  if (error?.code === "missing_participants") {
+    return "缺參與者,範例:/session codex,opus -- 題目";
+  }
+  if (error?.code === "bad_option") {
+    return `看不懂的選項:${details.option || ""},可用:repo= budget= write=`;
+  }
   if (error?.code === "topic_length") {
     const length = Number(details.length) || 0;
     const min = Number(details.min) || 0;

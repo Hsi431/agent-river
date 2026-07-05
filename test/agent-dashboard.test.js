@@ -85,7 +85,7 @@ test("dashboard feed cursor sends new session, exchange, and gate events once", 
   assert.equal(restartCalls.filter((call) => call.method === "sendMessage").length, 0);
 });
 
-test("dashboard /session command opens a real session ledger row", async () => {
+test("dashboard /session command opens real session ledger rows with accepted separators", async () => {
   const agentHome = makeAgentHome("codex-agent-dashboard-session-");
   setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
@@ -94,22 +94,38 @@ test("dashboard /session command opens a real session ledger row", async () => {
   const result = await dashboardOnce({
     agentHome,
     token: "test-token",
-    fetchImpl: sequencedTelegramFetch(calls, [[telegramMessageUpdate({
-      updateId: 10,
-      fromId: 123,
-      chatId: 456,
-      text: "/session codex,opus budget=3/9 write=codex -- U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.",
-    })]]),
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramMessageUpdate({
+        updateId: 10,
+        fromId: 123,
+        chatId: 456,
+        text: "/session codex,opus budget=3/9 write=codex -- U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.",
+      }),
+      telegramMessageUpdate({
+        updateId: 11,
+        fromId: 123,
+        chatId: 456,
+        text: "/session codex,opus — U6_DASHBOARD_SESSION_EM_DASH topic body.",
+      }),
+      telegramMessageUpdate({
+        updateId: 12,
+        fromId: 123,
+        chatId: 456,
+        text: "/session codex,opus – U6_DASHBOARD_SESSION_EN_DASH topic body.",
+      }),
+    ]]),
   });
   const rows = readJsonl(agentPaths(agentHome).sessions);
-  const reply = calls.find((call) => call.method === "sendMessage").body.text;
+  const replies = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
 
-  assert.equal(result.updates, 1);
-  assert.match(reply, /session #[a-f0-9]{6} 開場/);
+  assert.equal(result.updates, 3);
+  assert.equal(replies.every((reply) => /session #[a-f0-9]{6} 開場/.test(reply)), true);
   assert.equal(rows[0].event, "session_opened");
   assert.equal(rows[0].topic, "U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.");
   assert.deepEqual(rows[0].write_access, ["codex"]);
   assert.deepEqual(rows[0].budget, { max_messages: 3, max_minutes: 9 });
+  assert.equal(rows[1].topic, "U6_DASHBOARD_SESSION_EM_DASH topic body.");
+  assert.equal(rows[2].topic, "U6_DASHBOARD_SESSION_EN_DASH topic body.");
 });
 
 test("dashboard rejects non-owner messages and strict parser failures", async () => {
@@ -130,7 +146,7 @@ test("dashboard rejects non-owner messages and strict parser failures", async ()
   const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
 
   assert.equal(sent[0], "唯讀");
-  assert.match(sent[1], /^用法:\/session/);
+  assert.match(sent[1], /^找不到題目分隔符,參與者後面接 ` -- `\(兩個減號\)再接題目;直接打 — 也可以\n用法:\/session/);
   assert.equal(sent[2], "這是 v3 看板,指令:/session /sessions /kill /agents /model");
   assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
 });
@@ -153,6 +169,8 @@ test("dashboard /session reports validation errors with concrete details", async
       telegramMessageUpdate({ updateId: 24, fromId: 123, chatId: 456, text: "/session codex,foo -- abcde" }),
       telegramMessageUpdate({ updateId: 25, fromId: 123, chatId: 456, text: "/session codex,opus budget=bad -- abcde" }),
       telegramMessageUpdate({ updateId: 26, fromId: 123, chatId: 456, text: "/session codex,opus repo=missing -- abcde" }),
+      telegramMessageUpdate({ updateId: 27, fromId: 123, chatId: 456, text: "/session  -- abcde" }),
+      telegramMessageUpdate({ updateId: 28, fromId: 123, chatId: 456, text: "/session codex,opus nope=1 -- abcde" }),
     ]]),
   });
   const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
@@ -161,6 +179,8 @@ test("dashboard /session reports validation errors with concrete details", async
   assert.match(sent[1], /^參與者 foo 未註冊,現有:codex,opus\n用法:\/session/);
   assert.match(sent[2], /^預算格式錯誤:bad,請用 N\/M\n用法:\/session/);
   assert.match(sent[3], /^repo 解析失敗:missing,原因:找不到 repo\n用法:\/session/);
+  assert.match(sent[4], /^缺參與者,範例:\/session codex,opus -- 題目\n用法:\/session/);
+  assert.match(sent[5], /^看不懂的選項:nope=1,可用:repo= budget= write=\n用法:\/session/);
   assert.equal(fs.existsSync(agentPaths(agentHome).sessions), false);
 });
 
@@ -174,22 +194,24 @@ test("dashboard /model displays and updates runner policy for owners only", asyn
     token: "test-token",
     fetchImpl: sequencedTelegramFetch(calls, [[
       telegramMessageUpdate({ updateId: 27, fromId: 123, chatId: 456, text: "/model" }),
-      telegramMessageUpdate({ updateId: 28, fromId: 123, chatId: 456, text: "/model opus opus" }),
+      telegramMessageUpdate({ updateId: 28, fromId: 123, chatId: 456, text: "/model claude sonnet" }),
       telegramMessageUpdate({ updateId: 29, fromId: 123, chatId: 456, text: "/model codex gpt-5-codex" }),
-      telegramMessageUpdate({ updateId: 30, fromId: 999, chatId: 456, text: "/model opus sonnet" }),
-      telegramMessageUpdate({ updateId: 31, fromId: 123, chatId: 456, text: "/model opus llama" }),
-      telegramMessageUpdate({ updateId: 32, fromId: 123, chatId: 456, text: "/model" }),
+      telegramMessageUpdate({ updateId: 30, fromId: 999, chatId: 456, text: "/model claude opus" }),
+      telegramMessageUpdate({ updateId: 31, fromId: 123, chatId: 456, text: "/model opus opus" }),
+      telegramMessageUpdate({ updateId: 32, fromId: 123, chatId: 456, text: "/model claude llama" }),
+      telegramMessageUpdate({ updateId: 33, fromId: 123, chatId: 456, text: "/model" }),
     ]]),
   });
   const sent = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
   const config = JSON.parse(fs.readFileSync(agentPaths(agentHome).config, "utf8"));
 
-  assert.equal(sent[0], "opus runner: sonnet\ncodex runner: (codex CLI 預設)");
-  assert.equal(sent[1], "opus runner 已設為 opus");
+  assert.equal(sent[0], "claude runner(信箱名 opus): sonnet\ncodex runner: (codex CLI 預設)");
+  assert.equal(sent[1], "claude runner 已設為 sonnet");
   assert.equal(sent[2], "codex runner 已設為 gpt-5-codex");
   assert.equal(sent[3], "唯讀");
-  assert.match(sent[4], /^設定失敗:--exchange-runner-model must be default, sonnet, or opus/);
-  assert.equal(sent[5], "opus runner: opus\ncodex runner: gpt-5-codex");
+  assert.equal(sent[4], "claude runner 已設為 opus");
+  assert.match(sent[5], /^設定失敗:--exchange-runner-model must be default, sonnet, or opus/);
+  assert.equal(sent[6], "claude runner(信箱名 opus): opus\ncodex runner: gpt-5-codex");
   assert.equal(config.telegram_codex_policy.exchange_runner_model, "opus");
   assert.equal(config.telegram_codex_policy.codex_runner_model, "gpt-5-codex");
 });
