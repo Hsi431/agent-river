@@ -4,7 +4,7 @@ import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 import { isActivePollAgent } from "./registry.js";
 import { isExchangeAgentEnabled } from "./safety.js";
-import { assertSessionMessageAllowed, consumeBudget } from "./sessions.js";
+import { assertSessionMessageAllowed, consumeBudget, getSession } from "./sessions.js";
 
 const VALID_TARGET = /^[a-z][a-z0-9_-]*$|^any$/;
 const DEFAULT_LEASE_SECONDS = 3600;
@@ -51,6 +51,63 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     });
   }
   return message;
+}
+
+export function kickoffSession({ agentHome, session, channel = "session", threadId = null, chatId = null } = {}) {
+  const sessionId = session?.session_id;
+  const targets = Array.isArray(session?.participants) ? session.participants : [];
+  const messages = [];
+  for (const target of targets) {
+    messages.push(submitExchangeMessage({
+      agentHome,
+      from: "owner",
+      to: target,
+      channel,
+      threadId,
+      chatId,
+      sessionId,
+      text: session.topic,
+    }));
+  }
+  return {
+    sent: messages.length,
+    messages,
+    session: getSession(agentHome, sessionId),
+  };
+}
+
+export function relaySessionReply({ agentHome, message, reply, channel = "session-relay" } = {}) {
+  if (!message?.session_id || !reply?.id) {
+    return { relayed: false, reason: "no_session" };
+  }
+  const session = getSession(agentHome, message.session_id);
+  if (!session || session.state !== "active") {
+    return { relayed: false, reason: session?.closed_reason === "exhausted" ? "budget_exhausted" : "session_not_active" };
+  }
+  if (session.messages_used >= session.budget.max_messages) {
+    return { relayed: false, reason: "budget_exhausted" };
+  }
+  const from = String(reply.agent_id || "");
+  const to = nextRelayParticipant(session, from);
+  if (!to) {
+    return { relayed: false, reason: "no_relay_target" };
+  }
+  try {
+    const relayed = submitExchangeMessage({
+      agentHome,
+      from,
+      to,
+      channel,
+      threadId: message.thread_id || null,
+      chatId: message.chat_id || null,
+      sessionId: session.session_id,
+      repo: message.repo || session.repo || null,
+      text: reply.text,
+    });
+    return { relayed: true, message: relayed };
+  } catch (error) {
+    return { relayed: false, reason: error?.code || "relay_failed" };
+  }
 }
 
 export function listExchangeInbox(agentHome, { agent } = {}) {
@@ -251,6 +308,25 @@ function formatExchangeReply(message, reply) {
     reply_text: reply.text,
     created_at: reply.created_at,
   };
+}
+
+function nextRelayParticipant(session, from) {
+  const participants = Array.isArray(session?.participants) ? session.participants.map(String).sort() : [];
+  const candidates = participants.filter((name) => name !== from);
+  if (candidates.length === 0) {
+    return null;
+  }
+  const currentIndex = participants.indexOf(from);
+  if (currentIndex === -1) {
+    return candidates[0];
+  }
+  for (let offset = 1; offset <= participants.length; offset += 1) {
+    const candidate = participants[(currentIndex + offset) % participants.length];
+    if (candidate !== from) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 function latestExchangeClaims(agentHome) {

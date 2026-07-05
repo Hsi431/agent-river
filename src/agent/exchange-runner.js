@@ -9,6 +9,7 @@ import {
   claimExchangeMessage,
   listExchangeInbox,
   releaseExchangeClaim,
+  relaySessionReply,
   replyExchangeMessage,
 } from "./exchange.js";
 import { isSessionExchangeEligible } from "./sessions.js";
@@ -277,6 +278,9 @@ export async function runExchangeRunnerOnce({
       }
     }
     if (reply) {
+      const relay = reply.session_id
+        ? relaySessionReply({ agentHome, message, reply })
+        : null;
       const parsed = parseDispatchProposal(reply.text);
       const proposed = parsed.valid
         ? createDispatchApproval({
@@ -297,6 +301,8 @@ export async function runExchangeRunnerOnce({
         attempt,
         spawn: spawnResult,
         reply_error: spawnResult.replyError || null,
+        relay_message_id: relay?.message?.id || null,
+        relay_skipped: relay && !relay.relayed ? relay.reason : null,
         dispatch_approval_id: proposed?.approval?.id || null,
         dispatch_blocked_reason: proposed?.blocked ? proposed.reason : null,
       });

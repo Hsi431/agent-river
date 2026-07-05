@@ -3,6 +3,7 @@ import { redactSecrets } from "../../lib/secret-scan.js";
 import { listRegisteredAgents } from "../registry.js";
 import { getTelegramCodexPolicy, setTelegramCodexPolicy } from "../safety.js";
 import { killSession, listActiveSessions, openSession } from "../sessions.js";
+import { kickoffSession } from "../exchange.js";
 
 const DASHBOARD_HINT = "這是 v3 看板,指令:/session /sessions /kill /agents /model";
 const SESSION_USAGE = "用法:/session <a,b[,c]> [repo=<名>] [budget=<N>/<M>] [write=<agent>] -- <題目>";
@@ -24,7 +25,9 @@ export async function handleDashboardCommand({ agentHome, text, execFileImpl } =
         topic: parsed.topic,
         execFileImpl,
       });
-      return `session #${shortSession(session.session_id)} 開場(${session.participants.join(",")}/預算 ${session.budget.max_messages}/${session.budget.max_minutes}${session.repo ? `/repo ${session.repo}` : ""})`;
+      const kickoff = kickoffSession({ agentHome, session });
+      const current = kickoff.session || session;
+      return `session #${shortSession(session.session_id)} 開場,已開球 ${kickoff.sent} 封(${current.messages_used}/${current.budget.max_messages})(${session.participants.join(",")}/預算 ${session.budget.max_messages}/${session.budget.max_minutes}${session.repo ? `/repo ${session.repo}` : ""})`;
     } catch (error) {
       const line = describeSessionError(error);
       return line ? `${line}\n${SESSION_USAGE}` : SESSION_USAGE;

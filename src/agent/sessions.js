@@ -148,7 +148,7 @@ export function assertSessionMessageAllowed({ agentHome, sessionId, from, to, no
   if (!session || session.state !== "active") {
     throw sessionError("session_not_active", `Session is not active: ${sessionId}`);
   }
-  if (!session.participants.includes(String(from)) || !session.participants.includes(String(to))) {
+  if (!isSessionEndpointAllowed(session, String(from), "from") || !isSessionEndpointAllowed(session, String(to), "to")) {
     throw sessionError("not_participant", "Exchange sender and target must both be session participants");
   }
   if (session.messages_used >= session.budget.max_messages) {
@@ -166,7 +166,7 @@ export function isSessionExchangeEligible(agentHome, message, runnerAgent, { now
   if (!session || session.state !== "active") {
     return { eligible: false, reason: "session_not_active" };
   }
-  if (!session.participants.includes(String(message.from)) || !session.participants.includes(String(runnerAgent))) {
+  if (!isSessionEndpointAllowed(session, String(message.from), "from") || !isSessionEndpointAllowed(session, String(runnerAgent), "to")) {
     return { eligible: false, reason: "not_participant" };
   }
   if (session.messages_used >= session.budget.max_messages) {
@@ -174,6 +174,19 @@ export function isSessionExchangeEligible(agentHome, message, runnerAgent, { now
     return { eligible: false, reason: "budget_exhausted" };
   }
   return { eligible: true, reason: null, session };
+}
+
+function isSessionEndpointAllowed(session, name, role) {
+  if (session.participants.includes(name)) {
+    return true;
+  }
+  if (name !== "owner") {
+    return false;
+  }
+  if (session.initiator === "owner") {
+    return true;
+  }
+  return role === "to";
 }
 
 function foldSessions(agentHome) {

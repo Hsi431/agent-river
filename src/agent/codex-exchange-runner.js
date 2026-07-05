@@ -9,6 +9,7 @@ import {
   claimExchangeMessage,
   listExchangeInbox,
   releaseExchangeClaim,
+  relaySessionReply,
   replyExchangeMessage,
 } from "./exchange.js";
 import { isSessionExchangeEligible } from "./sessions.js";
@@ -112,6 +113,9 @@ export async function runCodexExchangeRunnerOnce({
     }
 
     if (reply) {
+      const relay = reply.session_id
+        ? relaySessionReply({ agentHome, message, reply })
+        : null;
       recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now });
       return summary({
         ran: true,
@@ -120,6 +124,8 @@ export async function runCodexExchangeRunnerOnce({
         attempt,
         run: serializeRunResult(runResult),
         reply_error: runResult.replyError || null,
+        relay_message_id: relay?.message?.id || null,
+        relay_skipped: relay && !relay.relayed ? relay.reason : null,
       });
     }
 

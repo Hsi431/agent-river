@@ -12,6 +12,7 @@ import {
   releaseExchangeClaim,
   replyExchangeMessage,
   submitExchangeMessage,
+  kickoffSession,
 } from "./exchange.js";
 import { runExchangeRunnerOnce, defaultRunnerSettingsPath, runnerSessionStatus } from "./exchange-runner.js";
 import { runCodexExchangeRunnerOnce } from "./codex-exchange-runner.js";
@@ -73,18 +74,26 @@ export async function runAgentCli(argv) {
       });
     case "session-open":
       requireSessionInitiatorTokenIfNeeded({ agentHome, initiator: requireArg(args, "initiator"), tokenFile: args["token-file"] });
-      return printResult({
-        session: await openSession({
+      {
+        const initiator = requireArg(args, "initiator");
+        const session = await openSession({
           agentHome,
-          initiator: requireArg(args, "initiator"),
+          initiator,
           participants: requireArg(args, "participants"),
           repo: args.repo || null,
           budgetMessages: args["budget-messages"],
           budgetMinutes: args["budget-minutes"],
           writeAccess: args["write-access"],
           topic: requireArg(args, "topic"),
-        }),
-      });
+        });
+        const kickoff = initiator === "owner" && !args["no-kickoff"]
+          ? kickoffSession({ agentHome, session })
+          : null;
+        return printResult({
+          session: kickoff?.session || session,
+          kickoff: kickoff ? { sent: kickoff.sent } : null,
+        });
+      }
     case "session-list":
       return printResult({ sessions: listActiveSessions(agentHome) });
     case "session-show":
@@ -301,7 +310,7 @@ function printHelp() {
   approve task_id
   reject task_id
   exchange-submit --from human --to codex --text "..."
-  session-open --initiator owner --participants codex,opus [--repo repo] [--budget-messages N] [--budget-minutes M] [--write-access codex] [--token-file path] --topic "..."
+  session-open --initiator owner --participants codex,opus [--repo repo] [--budget-messages N] [--budget-minutes M] [--write-access codex] [--token-file path] [--no-kickoff] --topic "..."
   session-list
   session-show --id session_id
   session-kill --id session_id

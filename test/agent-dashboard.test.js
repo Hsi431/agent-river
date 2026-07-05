@@ -116,16 +116,21 @@ test("dashboard /session command opens real session ledger rows with accepted se
     ]]),
   });
   const rows = readJsonl(agentPaths(agentHome).sessions);
+  const opened = rows.filter((row) => row.event === "session_opened");
+  const kickoffRows = rows.filter((row) => row.event === "session_message");
   const replies = calls.filter((call) => call.method === "sendMessage").map((call) => call.body.text);
 
   assert.equal(result.updates, 3);
   assert.equal(replies.every((reply) => /session #[a-f0-9]{6} 開場/.test(reply)), true);
-  assert.equal(rows[0].event, "session_opened");
-  assert.equal(rows[0].topic, "U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.");
-  assert.deepEqual(rows[0].write_access, ["codex"]);
-  assert.deepEqual(rows[0].budget, { max_messages: 3, max_minutes: 9 });
-  assert.equal(rows[1].topic, "U6_DASHBOARD_SESSION_EM_DASH topic body.");
-  assert.equal(rows[2].topic, "U6_DASHBOARD_SESSION_EN_DASH topic body.");
+  assert.equal(replies.every((reply) => /已開球 2 封\(2\//.test(reply)), true);
+  assert.equal(opened.length, 3);
+  assert.equal(opened[0].topic, "U2_DASHBOARD_SESSION_OPEN_TOKEN topic body.");
+  assert.deepEqual(opened[0].write_access, ["codex"]);
+  assert.deepEqual(opened[0].budget, { max_messages: 3, max_minutes: 9 });
+  assert.equal(opened[1].topic, "U6_DASHBOARD_SESSION_EM_DASH topic body.");
+  assert.equal(opened[2].topic, "U6_DASHBOARD_SESSION_EN_DASH topic body.");
+  assert.equal(kickoffRows.length, 6);
+  assert.equal(kickoffRows.every((row) => row.from === "owner"), true);
 });
 
 test("dashboard rejects non-owner messages and strict parser failures", async () => {

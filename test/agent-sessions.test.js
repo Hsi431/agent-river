@@ -3,9 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { runAgentCli } from "../src/agent/cli.js";
 import { runCodexExchangeRunnerOnce } from "../src/agent/codex-exchange-runner.js";
 import { runExchangeRunnerOnce } from "../src/agent/exchange-runner.js";
-import { claimExchangeMessage, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
+import { claimExchangeMessage, kickoffSession, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { closeSession, getSession, killSession, listActiveSessions, openSession } from "../src/agent/sessions.js";
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
@@ -117,6 +118,136 @@ test("session exchange submit and reply both attach session_id and consume messa
   assert.equal(folded.messages_used, 2);
   assert.equal(folded.state, "exhausted");
   assert.equal(folded.closed_reason, "exhausted");
+});
+
+test("owner kickoff broadcasts topic to every participant and consumes session budget", async () => {
+  const agentHome = makeAgentHome("u8-session-kickoff-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 6,
+    topic: "U8 kickoff topic reaches both participants.",
+  });
+
+  const kickoff = kickoffSession({ agentHome, session });
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+  const ledger = readJsonl(agentPaths(agentHome).sessions).filter((row) => row.event === "session_message");
+
+  assert.equal(kickoff.sent, 2);
+  assert.equal(kickoff.session.messages_used, 2);
+  assert.deepEqual(messages.map((row) => row.from), ["owner", "owner"]);
+  assert.deepEqual(messages.map((row) => row.to), ["codex", "opus"]);
+  assert.deepEqual(ledger.map((row) => [row.from, row.to]), [["owner", "codex"], ["owner", "opus"]]);
+});
+
+test("CLI session-open kicks off owner sessions by default and --no-kickoff disables it", async () => {
+  const agentHome = makeAgentHome("u8-session-cli-kickoff-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+
+  const opened = await runCli([
+    "session-open", "--state", agentHome,
+    "--initiator", "owner",
+    "--participants", "codex,opus",
+    "--budget-messages", "6",
+    "--topic", "U8 CLI default kickoff topic.",
+  ]);
+  const quiet = await runCli([
+    "session-open", "--state", agentHome,
+    "--initiator", "owner",
+    "--participants", "codex,opus",
+    "--no-kickoff",
+    "--topic", "U8 CLI no kickoff topic.",
+  ]);
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+
+  assert.deepEqual(opened.kickoff, { sent: 2 });
+  assert.equal(opened.session.messages_used, 2);
+  assert.equal(quiet.kickoff, null);
+  assert.equal(quiet.session.messages_used, 0);
+  assert.equal(messages.length, 2);
+});
+
+test("agent-opened sessions do not kickoff", async () => {
+  const agentHome = makeAgentHome("u8-session-agent-no-kickoff-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+
+  const opened = await openSession({
+    agentHome,
+    initiator: "agent:opus",
+    participants: "codex",
+    topic: "U8 agent-opened sessions send their own first message.",
+  });
+
+  assert.equal(opened.messages_used, 0);
+  assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 0);
+});
+
+test("session relay forwards a runner reply to the next participant", async () => {
+  const agentHome = makeAgentHome("u8-session-relay-");
+  enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 6,
+    topic: "U8 relay kickoff topic.",
+  });
+  kickoffSession({ agentHome, session });
+
+  const result = await runCodexExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    codexRunnerImpl: async () => ({ ok: true, text: "U8 codex reply for relay." }),
+  });
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+  const relayed = messages.find((row) => row.id === result.relay_message_id);
+  const folded = getSession(agentHome, session.session_id);
+
+  assert.equal(result.reason, "replied");
+  assert.equal(result.relay_skipped, null);
+  assert.equal(relayed.from, "codex");
+  assert.equal(relayed.to, "opus");
+  assert.equal(relayed.text, "U8 codex reply for relay.");
+  assert.equal(folded.messages_used, 4);
+});
+
+test("session relay stops when the reply exhausts the message budget", async () => {
+  const agentHome = makeAgentHome("u8-session-relay-budget-");
+  enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    budgetMessages: 2,
+    topic: "U8 budget exhaustion relay stop.",
+  });
+  const message = submitExchangeMessage({
+    agentHome,
+    from: "owner",
+    to: "codex",
+    channel: "cli",
+    sessionId: session.session_id,
+    text: "U8 one message before exhausting reply.",
+  });
+
+  const result = await runCodexExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    codexRunnerImpl: async () => ({ ok: true, text: "U8 reply consumes final budget unit." }),
+  });
+  const folded = getSession(agentHome, session.session_id);
+
+  assert.equal(result.message_id, message.id);
+  assert.equal(result.relay_message_id, null);
+  assert.equal(result.relay_skipped, "budget_exhausted");
+  assert.equal(folded.state, "exhausted");
+  assert.equal(folded.messages_used, 2);
 });
 
 test("session submit rejects non-participants with a stable error code", async () => {
@@ -331,4 +462,16 @@ test("manual close records closed_ok reason", async () => {
 
 function makeAgentHome(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+async function runCli(argv) {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (value) => lines.push(String(value));
+  try {
+    await runAgentCli(argv);
+  } finally {
+    console.log = originalLog;
+  }
+  return lines[0] ? JSON.parse(lines[0]) : null;
 }
