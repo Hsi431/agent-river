@@ -29,7 +29,7 @@ test("session ledger opens and folds owner sessions with explicit budget and wri
     topic: "Review the session core implementation wiring.",
     now: Date.parse("2026-07-05T00:00:00.000Z"),
   });
-  const folded = getSession(agentHome, session.session_id);
+  const folded = getSession(agentHome, session.session_id, { now: Date.parse("2026-07-05T00:00:01.000Z") });
   const rows = readJsonl(agentPaths(agentHome).sessions);
 
   assert.equal(rows.length, 1);
