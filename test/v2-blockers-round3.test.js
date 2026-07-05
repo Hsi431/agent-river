@@ -23,6 +23,7 @@ import { makeClaudeAdapter } from "../src/agent/v2/agent-adapter.js";
 import { acquirePollerLock, releasePollerLock } from "../src/agent/telegram.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { setTelegramCodexPolicy } from "../src/agent/safety.js";
+import { readJsonl } from "../src/lib/jsonl.js";
 
 function makeAgentHome(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -202,4 +203,41 @@ test("§15.A/§5: a second same-session-key message is refused as busy", async (
   // Exactly one active turn for this key.
   const mine = listActiveTurns().filter((t) => t.keyDims && String(t.keyDims.ownerUserId) === "u1");
   assert.equal(mine.length, 1);
+});
+
+// ─── U13: v2 result text is redacted before it reaches the outbox ─────────────
+
+test("U13: v2 outbox redacts secrets in the model result before persisting", async () => {
+  const ws = makeAgentHome("v2-redact-ws-");
+  const repo = await makeGitRepo(ws, "proj");
+  const agentHome = makeAgentHome("v2-redact-agent-");
+  setTelegramCodexPolicy(agentHome, { default_repo: repo });
+
+  const secret = "sk-U13SECRETABCDEFGHIJKLMNOP";
+  const adapters = {
+    claude: {
+      async run() {
+        return { ok: true, text: `here is the key ${secret} done`, sessionId: "s1", tokens: 1, outcome: "ok" };
+      },
+    },
+  };
+  // Capture the turn body's promise so we can await the outbox write.
+  let turnDone;
+  const bg = (fn) => { turnDone = fn(); };
+  await handleV2Message({
+    agentHome,
+    ownerUserId: "u1",
+    chatId: "c1",
+    text: "@claude review this",
+    execFileImpl: execFile,
+    adapters,
+    backgroundImpl: bg,
+  });
+  await turnDone;
+
+  const outbox = readJsonl(agentPaths(agentHome).v2Outbox);
+  const entry = outbox.find((row) => String(row.id).startsWith("v2turn_result_"));
+  assert.ok(entry, "a v2 result outbox entry must exist");
+  assert.doesNotMatch(entry.text, /sk-U13SECRET/);
+  assert.match(entry.text, /\[redacted:openai_like_key\]/);
 });

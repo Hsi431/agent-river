@@ -145,6 +145,20 @@ test("poll agents need a valid token for inbox claim and reply", async () => {
   assert.equal(replied.reply.agent_id, "otter");
 });
 
+test("exchange-release requires a valid poll-agent token (U13)", async () => {
+  const agentHome = makeAgentHome("u13-release-token-");
+  const tokenFile = await approvePollAgent(agentHome, "otter");
+  const message = await runCli(["exchange-submit", "--state", agentHome, "--from", "owner", "--to", "otter", "--text", "U13 release token test."]);
+  await runCli(["exchange-claim", "--state", agentHome, "--id", message.message.id, "--agent", "otter", "--token-file", tokenFile]);
+
+  await assert.rejects(
+    () => runCli(["exchange-release", "--state", agentHome, "--id", message.message.id, "--agent", "otter"]),
+    (error) => error.code === "bad_agent_token",
+  );
+  const released = await runCli(["exchange-release", "--state", agentHome, "--id", message.message.id, "--agent", "otter", "--token-file", tokenFile]);
+  assert.equal(released.claim.status, "released");
+});
+
 test("registry-seeded spawn agents and owner paths do not require tokens", async () => {
   const agentHome = makeAgentHome("u3-spawn-owner-");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });

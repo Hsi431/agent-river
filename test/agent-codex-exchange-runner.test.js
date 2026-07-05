@@ -466,7 +466,7 @@ test("codex runner adds unbound repo warning when message has no repo", async ()
   assert.match(captured.prompt, /未綁定任何 repo/);
 });
 
-test("codex runner falls back to repoDir and logs repo_fallback when session repo is invalid", async () => {
+test("codex runner fails closed to home and logs repo_fallback when session repo is invalid", async () => {
   const agentHome = makeAgentHome("u12-codex-runner-repo-fallback-");
   const invalidRepo = path.join(agentHome, "missing-repo");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
@@ -498,9 +498,9 @@ test("codex runner falls back to repoDir and logs repo_fallback when session rep
   });
   const dispatch = readJsonl(agentPaths(agentHome).codexExchangeRunnerDispatch).at(-1);
 
-  assert.equal(cwd, REPO);
+  assert.equal(cwd, os.homedir());
   assert.equal(dispatch.repo_fallback.requested, invalidRepo);
-  assert.equal(dispatch.repo_fallback.fallback, REPO);
+  assert.equal(dispatch.repo_fallback.reason, "realpath_failed");
 });
 
 function escapeRegExp(value) {

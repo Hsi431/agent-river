@@ -9,6 +9,7 @@ import { makeClaudeAdapter, makeCodexAdapter } from "./agent-adapter.js";
 import { makeTurnController, registerActiveTurn, unregisterActiveTurn, stopAllTurns, appendV2Run, listActiveTurns, findActiveTurnByKey } from "./kill.js";
 import { buildStartAck, buildStatusReport, outcomeMessage, resolverErrorMessage, routerErrorMessage } from "./ux.js";
 import { checkSafety, getTelegramCodexPolicy } from "../safety.js";
+import { redactSecrets } from "../../lib/secret-scan.js";
 import { agentPaths } from "../paths.js";
 
 // v2 turn record schema version.
@@ -283,7 +284,7 @@ export async function handleV2Message({
     appendV2Outbox(agentHome, {
       id: outboxId,
       chat_id: String(chatId || ""),
-      text: String(replyText || ""),
+      text: redactSecrets(String(replyText || "")),
       turn_id: turnId,
       outcome: result.outcome || (result.ok ? "ok" : "outcome_unknown"),
       status: "queued",

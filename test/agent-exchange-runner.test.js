@@ -425,7 +425,7 @@ test("exchange runner uses session message repo as cwd and marks bound repo in p
   assert.match(invocation.prompt, new RegExp(`本 session 綁定 repo:${escapeRegExp(repo)}`));
 });
 
-test("exchange runner falls back to repoDir and logs repo_fallback when session repo is invalid", async () => {
+test("exchange runner fails closed to home and logs repo_fallback when session repo is invalid", async () => {
   const agentHome = makeAgentHome("u12-opus-runner-repo-fallback-");
   const invalidRepo = path.join(agentHome, "missing-repo");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
@@ -457,9 +457,9 @@ test("exchange runner falls back to repoDir and logs repo_fallback when session 
   });
   const dispatch = readJsonl(agentPaths(agentHome).exchangeRunnerDispatch).at(-1);
 
-  assert.equal(cwd, REPO);
+  assert.equal(cwd, os.homedir());
   assert.equal(dispatch.repo_fallback.requested, invalidRepo);
-  assert.equal(dispatch.repo_fallback.fallback, REPO);
+  assert.equal(dispatch.repo_fallback.reason, "realpath_failed");
 });
 
 test("exchange runner fails closed when the restricted settings file is missing", async () => {

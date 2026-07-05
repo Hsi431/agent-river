@@ -84,7 +84,7 @@ export async function runCodexExchangeRunnerOnce({
     const attempt = priorAttempts + 1;
     const model = policy.codex_runner_model || null;
     const timeoutSeconds = Number(policy.exchange_runner_timeout_seconds) || 600;
-    const repoBinding = resolveMessageRepoBinding({ message, repoDir });
+    const repoBinding = resolveMessageRepoBinding({ message, repoDir, workspaceRoot: policy.workspace_root });
     const prompt = buildCodexPrompt({ agentHome, msgId: message.id, repoDir: repoBinding.cwd, repoPromptLine: repoBinding.promptLine });
     const logPath = path.join(paths.codexExchangeRunnerLogsDir, `${message.id}.attempt-${attempt}.log`);
 

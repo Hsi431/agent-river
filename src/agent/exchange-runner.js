@@ -248,7 +248,7 @@ export async function runExchangeRunnerOnce({
     const timeoutSeconds = Number(policy.exchange_runner_timeout_seconds);
     const chatId = message.chat_id || null;
     const sessionId = chatId ? readRunnerSession(paths, chatId) : null;
-    const repoBinding = resolveMessageRepoBinding({ message, repoDir });
+    const repoBinding = resolveMessageRepoBinding({ message, repoDir, workspaceRoot: policy.workspace_root });
     const invocation = buildClaudeInvocation({ repoDir: repoBinding.cwd, agentHome, msgId: message.id, model, settingsPath, timeoutSeconds, sessionId, repoPromptLine: repoBinding.promptLine });
     const logPath = path.join(paths.exchangeRunnerLogsDir, `${message.id}.attempt-${attempt}.log`);
 

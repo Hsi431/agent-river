@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { appendJsonl, readJsonl } from "../lib/jsonl.js";
 import { redactSecrets } from "../lib/secret-scan.js";
 import { agentPaths } from "./paths.js";
-import { checkSafety } from "./safety.js";
+import { checkSafety, getTelegramCodexPolicy } from "./safety.js";
 import {
   claimExchangeMessage,
   listExchangeInbox,
@@ -104,7 +104,7 @@ export function runExecCommand({
         cwd,
         detached: true,
         stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
+        env: execChildEnv(),
       });
     } catch (error) {
       resolve({ ok: false, timedOut: false, code: null, stdout: "", stderr: "", error: sanitizeError(error.message) });
@@ -189,7 +189,7 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
   }
 
   const attempt = priorAttempts + 1;
-  const repoBinding = resolveMessageRepoBinding({ message, repoDir });
+  const repoBinding = resolveMessageRepoBinding({ message, repoDir, workspaceRoot: getTelegramCodexPolicy(agentHome).workspace_root });
   const run = await runExecCommand({
     command: agent.exec_command,
     cwd: resolveExecCwd({ agent, repoBinding }),
@@ -396,6 +396,25 @@ function serializeRun(run) {
     error: run.error || null,
     stderr: run.stderr ? sanitizeError(run.stderr) : null,
   };
+}
+
+// Third-party exec commands get a minimal env allowlist — never the bot token,
+// agent-river token, or provider API keys the parent may hold. A compromised or
+// hostile registered command therefore has no host secrets to exfiltrate even
+// though it runs a shell.
+function execChildEnv() {
+  const env = { AGENT_RIVER_MESSAGE: "1" };
+  for (const key of ["PATH", "HOME", "LANG", "TZ", "USER"]) {
+    if (process.env[key] !== undefined) {
+      env[key] = process.env[key];
+    }
+  }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("LC_") && value !== undefined) {
+      env[key] = value;
+    }
+  }
+  return env;
 }
 
 function sanitizeError(message) {

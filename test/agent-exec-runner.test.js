@@ -188,6 +188,37 @@ test("exec runner uses session message repo as subprocess cwd", async () => {
   assert.equal(reply.text.trim(), repo);
 });
 
+test("exec runner rejects a valid repo outside workspace_root and fails closed (U13)", async () => {
+  const agentHome = makeAgentHome("u13-exec-repo-escape-");
+  const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u13-ws-")));
+  const outsideRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u13-outside-")));
+  setTelegramCodexPolicy(agentHome, { workspace_root: workspace });
+  await approveExecAgent(agentHome, "pwdout", "pwd");
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,pwdout",
+    budgetMessages: 6,
+    topic: "U13 exec runner rejects repo outside workspace.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "pwdout",
+    sessionId: session.session_id,
+    repo: outsideRepo,
+    text: "U13 exec workspace escape check.",
+  });
+
+  await runExecRunnerOnce({ agentHome, repoDir: process.cwd() });
+  const reply = readJsonl(agentPaths(agentHome).exchangeReplies)[0];
+  const dispatch = readJsonl(agentPaths(agentHome).execRunnerDispatch).at(-1);
+
+  assert.equal(reply.text.trim(), os.homedir());
+  assert.notEqual(reply.text.trim(), outsideRepo);
+  assert.equal(dispatch.repo_fallback.reason, "outside_workspace");
+});
+
 test("exec runner envelope warns when session message has no bound repo", () => {
   const envelope = JSON.parse(buildExecEnvelope({
     agentHome: makeAgentHome("u12-exec-unbound-envelope-"),
@@ -200,7 +231,7 @@ test("exec runner envelope warns when session message has no bound repo", () => 
   assert.match(envelope.repo_status, /未綁定任何 repo/);
 });
 
-test("exec runner falls back to repoDir and logs repo_fallback when session repo is invalid", async () => {
+test("exec runner fails closed to home and logs repo_fallback when session repo is invalid", async () => {
   const agentHome = makeAgentHome("u12-exec-repo-fallback-");
   const invalidRepo = path.join(agentHome, "missing-repo");
   await approveExecAgent(agentHome, "pwdfallback", "pwd");
@@ -224,9 +255,36 @@ test("exec runner falls back to repoDir and logs repo_fallback when session repo
   const reply = readJsonl(agentPaths(agentHome).exchangeReplies)[0];
   const dispatch = readJsonl(agentPaths(agentHome).execRunnerDispatch).at(-1);
 
-  assert.equal(reply.text.trim(), process.cwd());
+  assert.equal(reply.text.trim(), os.homedir());
   assert.equal(dispatch.repo_fallback.requested, invalidRepo);
-  assert.equal(dispatch.repo_fallback.fallback, process.cwd());
+  assert.equal(dispatch.repo_fallback.reason, "realpath_failed");
+});
+
+test("exec child env drops host secrets and keeps a minimal allowlist (U13)", async () => {
+  const agentHome = makeAgentHome("u13-exec-env-");
+  const prevToken = process.env.TELEGRAM_BOT_TOKEN;
+  const prevKey = process.env.OPENAI_API_KEY;
+  process.env.TELEGRAM_BOT_TOKEN = "U13_SECRET_BOT_TOKEN";
+  process.env.OPENAI_API_KEY = "U13_SECRET_API_KEY";
+  try {
+    await approveExecAgent(agentHome, "envprobe", 'printf \'tok=[%s] key=[%s] marker=%s path=%s\' "$TELEGRAM_BOT_TOKEN" "$OPENAI_API_KEY" "$AGENT_RIVER_MESSAGE" "${PATH:+yes}"');
+    const session = await openSession({
+      agentHome,
+      initiator: "owner",
+      participants: "codex,envprobe",
+      budgetMessages: 6,
+      topic: "U13 exec child env must not inherit host secrets.",
+    });
+    kickoffSession({ agentHome, session });
+
+    await runExecRunnerOnce({ agentHome, repoDir: process.cwd() });
+    const reply = readJsonl(agentPaths(agentHome).exchangeReplies)[0];
+
+    assert.equal(reply.text.trim(), "tok=[] key=[] marker=1 path=yes");
+  } finally {
+    restoreEnv("TELEGRAM_BOT_TOKEN", prevToken);
+    restoreEnv("OPENAI_API_KEY", prevKey);
+  }
 });
 
 test("exec runner service generator writes a 90 second timer unit", () => {
@@ -257,6 +315,14 @@ async function approveExecAgent(agentHome, name, command, { timeoutSeconds = 5 }
       telegramCallbackUpdate({ updateId: 1, fromId: 123, chatId: 456, data: `join:approve:${name}` }),
     ]]),
   });
+}
+
+function restoreEnv(key, value) {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
 }
 
 async function runCli(argv) {

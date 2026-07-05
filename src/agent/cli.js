@@ -133,6 +133,7 @@ export async function runAgentCli(argv) {
         }),
       });
     case "exchange-release":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "agent"), tokenFile: args["token-file"] });
       return printResult(releaseExchangeClaim({
         agentHome,
         id: requireArg(args, "id"),
