@@ -80,6 +80,8 @@ export function pickEligibleExecMessage(agentHome, agentName, { now = Date.now()
 export function buildExecEnvelope({ agentHome, message, repoPromptLine = null }) {
   const session = message.session_id ? getSession(agentHome, message.session_id) : null;
   return `${JSON.stringify({
+    agent_river_contract: "exec-v1",
+    message_id: message.id,
     sender: String(message.from || ""),
     session_id: message.session_id || null,
     session_topic: session?.topic || null,
