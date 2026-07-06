@@ -6,7 +6,7 @@ import { redactSecrets } from "../../lib/secret-scan.js";
 import { agentPaths } from "../paths.js";
 import { listRegisteredAgents } from "../registry.js";
 import { getSession } from "../sessions.js";
-import { listTasks } from "../tasks.js";
+import { listTasks, taskApprovalHash } from "../tasks.js";
 
 const SUMMARY_CHARS = 60;
 
@@ -75,11 +75,12 @@ export function collectDashboardFeed(agentHome, { cursor = loadDashboardCursor(a
   return { events, cursor: next };
 }
 
-export function gateMarkup(taskId) {
+export function gateMarkup(task) {
+  const hash = taskApprovalHash(task);
   return {
     inline_keyboard: [[
-      { text: "放行", callback_data: `gate:approve:${taskId}` },
-      { text: "拒絕", callback_data: `gate:reject:${taskId}` },
+      { text: "放行", callback_data: `gate:approve:${task.id}:${hash}` },
+      { text: "拒絕", callback_data: `gate:reject:${task.id}:${hash}` },
     ]],
   };
 }
@@ -198,7 +199,7 @@ function gateEvents(agentHome, cursor) {
       task_id: task.id,
       created_at: task.updated_at || task.created_at || "",
       text: `硬閘 edit task ${task.id} pending repo=${task.repo}\n${oneLine(task.request, SUMMARY_CHARS)}`,
-      reply_markup: gateMarkup(task.id),
+      reply_markup: gateMarkup(task),
     }));
 }
 

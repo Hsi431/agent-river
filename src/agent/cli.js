@@ -36,7 +36,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-user-add", "direct-send-user-remove", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   if (args.help) {
     return printHelp();
   }
@@ -240,6 +240,8 @@ export async function runAgentCli(argv) {
       return printResult({
         policy: setTelegramCodexPolicy(agentHome, {
           default_repo: args["default-repo"],
+          direct_send_user_add: args["direct-send-user-add"],
+          direct_send_user_remove: args["direct-send-user-remove"],
           memory_enabled: args["memory-enabled"],
           exchange_notify_enabled: args["exchange-notify-enabled"],
           exchange_notify_chat_id: args["exchange-notify-chat-id"],
@@ -439,7 +441,7 @@ function printHelp() {
   telegram-update --update-json '{"message":{"from":{"id":123},"chat":{"id":456},"text":"agent status"}}'
   telegram-poll [--transport fetch|curl]
   telegram-codex-policy
-  telegram-codex-policy-set [--default-repo /path] [--memory-enabled true|false] [--exchange-notify-enabled true|false] [--exchange-notify-chat-id ID] [--exchange-notify-max-per-cycle N] [--exchange-runner-enabled true|false] [--exchange-runner-model sonnet|opus] [--codex-runner-model MODEL] [--exchange-runner-max-attempts N] [--exchange-runner-timeout-seconds N] [--exchange-runner-daily-max N] [--v2-enabled true|false] [--workspace-root /path]
+  telegram-codex-policy-set [--default-repo /path] [--direct-send-user-add ID] [--direct-send-user-remove ID] [--memory-enabled true|false] [--exchange-notify-enabled true|false] [--exchange-notify-chat-id ID] [--exchange-notify-max-per-cycle N] [--exchange-runner-enabled true|false] [--exchange-runner-model sonnet|opus] [--codex-runner-model MODEL] [--exchange-runner-max-attempts N] [--exchange-runner-timeout-seconds N] [--exchange-runner-daily-max N] [--v2-enabled true|false] [--workspace-root /path]
   dashboard-once [--transport fetch|curl] [--long-poll-seconds N] [--dashboard-chat-id ID]
   dashboard-bridge [--transport fetch|curl] [--long-poll-seconds N] [--max-cycles N] [--sleep-seconds N] [--dashboard-chat-id ID]
   dashboard-service-print [--repo /path] [--long-poll-seconds N]

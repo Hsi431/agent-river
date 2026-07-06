@@ -9,7 +9,7 @@ import { allowGatewayUser, enableExchangeAgent, setTelegramCodexPolicy } from ".
 import { closeSession, openSession } from "../src/agent/sessions.js";
 import { claimExchangeMessage, kickoffSession, replyExchangeMessage, submitExchangeMessage } from "../src/agent/exchange.js";
 import { createDispatchApproval } from "../src/agent/dispatch.js";
-import { createTask, listTasks, readTask } from "../src/agent/tasks.js";
+import { createTask, listTasks, readTask, taskApprovalHash, writeTask } from "../src/agent/tasks.js";
 import { appendJsonl, readJsonl } from "../src/lib/jsonl.js";
 import { acquireDashboardLock, dashboardOnce, releaseDashboardLock } from "../src/agent/dashboard/bot.js";
 import { collectDashboardFeed, initializeDashboardCursor } from "../src/agent/dashboard/feed.js";
@@ -64,7 +64,7 @@ test("dashboard feed cursor sends new session, exchange, and gate events once", 
   assert.equal(sentTexts.some((text) => /U2_DASHBOARD_FEED_MESSAGE_TOKEN/.test(text)), true);
   assert.equal(sentTexts.some((text) => /U2_DASHBOARD_FEED_REPLY_TOKEN/.test(text)), true);
   assert.equal(sentTexts.some((text) => text.includes(task.id) && /U2_DASHBOARD_GATE_TOKEN/.test(text)), true);
-  assert.equal(firstCalls.find((call) => call.body.reply_markup)?.body.reply_markup.inline_keyboard[0][0].callback_data, `gate:approve:${task.id}`);
+  assert.equal(firstCalls.find((call) => call.body.reply_markup)?.body.reply_markup.inline_keyboard[0][0].callback_data, `gate:approve:${task.id}:${taskApprovalHash(task)}`);
 
   const secondCalls = [];
   const second = await dashboardOnce({
@@ -339,7 +339,7 @@ test("session task callback creates a pending codex edit task and next feed gate
   assert.match(task.request, new RegExp(`完整逐字稿:.*${session.session_id}\\.md`));
   assert.match(task.request, new RegExp(`\\[session:${session.session_id}\\]`));
   assert.equal(result.feed.some((event) => event.kind === "gate" && event.task_id === task.id), true);
-  assert.equal(sent.some((body) => body.text.includes(`硬閘 edit task ${task.id}`) && body.reply_markup.inline_keyboard[0][0].callback_data === `gate:approve:${task.id}`), true);
+  assert.equal(sent.some((body) => body.text.includes(`硬閘 edit task ${task.id}`) && body.reply_markup.inline_keyboard[0][0].callback_data === `gate:approve:${task.id}:${taskApprovalHash(task)}`), true);
 });
 
 test("dashboard /task handles missing repo, repo override, and duplicate conversion notice", async () => {
@@ -658,7 +658,7 @@ test("dashboard gate callbacks approve tasks and reject non-owner callbacks", as
     token: "test-token",
     fetchImpl: sequencedTelegramFetch(calls, [[
       telegramCallbackUpdate({ updateId: 30, fromId: 999, chatId: 456, data: `gate:approve:${approved.id}` }),
-      telegramCallbackUpdate({ updateId: 31, fromId: 123, chatId: 456, data: `gate:approve:${approved.id}` }),
+      telegramCallbackUpdate({ updateId: 31, fromId: 123, chatId: 456, data: `gate:approve:${approved.id}:${taskApprovalHash(approved)}` }),
       telegramCallbackUpdate({ updateId: 32, fromId: 123, chatId: 456, data: `gate:reject:${rejected.id}` }),
     ]]),
   });
@@ -669,6 +669,139 @@ test("dashboard gate callbacks approve tasks and reject non-owner callbacks", as
   assert.match(answers[2], /已拒絕/);
   assert.equal(readTask(agentHome, approved.id).approval, "approved");
   assert.equal(readTask(agentHome, rejected.id).approval, "rejected");
+});
+
+test("dashboard gate approve accepts new hash matching current task content", async () => {
+  const agentHome = makeAgentHome("u12-dashboard-gate-hash-approve-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  const task = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U12_GATE_HASH_APPROVE_TOKEN edit task.",
+    mode: "edit",
+  });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramCallbackUpdate({ updateId: 80, fromId: 123, chatId: 456, data: `gate:approve:${task.id}:${taskApprovalHash(task)}` }),
+    ]]),
+  });
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+  const stored = readTask(agentHome, task.id);
+
+  assert.match(answers[0], /已放行/);
+  assert.equal(stored.approval, "approved");
+});
+
+test("dashboard gate approve rejects a stale hash after task content changes", async () => {
+  const agentHome = makeAgentHome("u12-dashboard-gate-stale-hash-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  const cursor = initializeDashboardCursor(agentHome);
+  const task = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U12_GATE_STALE_HASH_TOKEN original edit task.",
+    mode: "edit",
+  });
+  const feed = collectDashboardFeed(agentHome, { cursor });
+  const callbackData = feed.events.find((event) => event.task_id === task.id).reply_markup.inline_keyboard[0][0].callback_data;
+  const changed = { ...readTask(agentHome, task.id), request: "U12_GATE_STALE_HASH_TOKEN changed edit task." };
+  writeTask(agentHome, changed);
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramCallbackUpdate({ updateId: 81, fromId: 123, chatId: 456, data: callbackData }),
+    ]]),
+  });
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+  const stored = readTask(agentHome, task.id);
+
+  assert.match(answers[0], /內容已變更/);
+  assert.equal(stored.approval, "pending");
+});
+
+test("dashboard gate approve rejects old callbacks without a hash", async () => {
+  const agentHome = makeAgentHome("u12-dashboard-gate-old-approve-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  const task = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U12_GATE_OLD_APPROVE_TOKEN edit task.",
+    mode: "edit",
+  });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramCallbackUpdate({ updateId: 82, fromId: 123, chatId: 456, data: `gate:approve:${task.id}` }),
+    ]]),
+  });
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+  const stored = readTask(agentHome, task.id);
+
+  assert.equal(answers[0], "舊版按鈕已失效,請重新產生核准請求");
+  assert.equal(stored.approval, "pending");
+});
+
+test("dashboard gate approve reports already-approved tasks without mutating them", async () => {
+  const agentHome = makeAgentHome("u12-dashboard-gate-approved-again-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  const task = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U12_GATE_APPROVED_AGAIN_TOKEN edit task.",
+    mode: "edit",
+  });
+  const approved = { ...readTask(agentHome, task.id), approval: "approved" };
+  writeTask(agentHome, approved);
+  const before = readTask(agentHome, task.id);
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramCallbackUpdate({ updateId: 83, fromId: 123, chatId: 456, data: `gate:approve:${task.id}:${taskApprovalHash(before)}` }),
+    ]]),
+  });
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+  const after = readTask(agentHome, task.id);
+
+  assert.equal(answers[0], "已處理過");
+  assert.deepEqual(after, before);
+});
+
+test("dashboard gate reject still accepts old callbacks without a hash", async () => {
+  const agentHome = makeAgentHome("u12-dashboard-gate-old-reject-");
+  setTelegramCodexPolicy(agentHome, { direct_send_user_add: "123" });
+  const task = createTask({
+    agentHome,
+    repo: process.cwd(),
+    request: "U12_GATE_OLD_REJECT_TOKEN edit task.",
+    mode: "edit",
+  });
+  const calls = [];
+
+  await dashboardOnce({
+    agentHome,
+    token: "test-token",
+    fetchImpl: sequencedTelegramFetch(calls, [[
+      telegramCallbackUpdate({ updateId: 84, fromId: 123, chatId: 456, data: `gate:reject:${task.id}` }),
+    ]]),
+  });
+  const answers = calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.body.text);
+  const stored = readTask(agentHome, task.id);
+
+  assert.match(answers[0], /已拒絕/);
+  assert.equal(stored.approval, "rejected");
 });
 
 test("dashboard cycle flushes v2, exchange, and dispatch notifications from real ledgers", async () => {

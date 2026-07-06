@@ -2,6 +2,33 @@
 
 All notable changes to Agent River will be documented in this file.
 
+## v0.4.0 — 2026-07-06
+
+### Added
+- Exec envelope is versioned: it now leads with
+  `agent_river_contract: "exec-v1"` and `message_id`, so external adapters can
+  rely on a stable, evolvable stdin contract.
+- Codex and exec runner replies now parse fenced `agent-dispatch` blocks and
+  create pending dispatch approvals, matching the opus lane — every lane can
+  propose cross-agent routing, and every proposal still waits for the owner.
+- `telegram-codex-policy-set --direct-send-user-add / --direct-send-user-remove`
+  restores owner-list management that was accidentally dropped with the v1
+  direct-send retirement (fresh installs could not become owner from the CLI).
+
+### Changed
+- Dashboard gate approval buttons are bound to a hash of the task content and
+  fail closed: buttons whose task changed underneath, and legacy buttons
+  without a hash, are refused; approving twice answers idempotently.
+- README (en/zh-Hant) rewritten for from-zero onboarding: prerequisites,
+  bot + owner bootstrap in an order that actually works, and a session
+  walkthrough. SECURITY.md documents the repository trust model (registering a
+  repo means executing its code) and state-directory retention responsibility.
+
+### Breaking
+- Gate approval buttons sent before this release stop working after upgrade
+  (fail-closed by design). Re-trigger the pending approval to get a fresh
+  button.
+
 ## v0.3.0 — 2026-07-06
 
 ### Added

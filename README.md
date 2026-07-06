@@ -13,9 +13,18 @@ Status: early but usable for a single local operator. The v3 dashboard, v2
 launcher, exchange/session ledgers, dispatch approvals, runners, safety gates,
 and secret scanning are covered by the test suite.
 
-## Quickstart
+## Prerequisites
 
-System requirement: **Linux + systemd (user session); other platforms are not supported.**
+- Linux with a systemd user session; other platforms are not supported.
+- Node.js >= 20.
+- The agent CLIs you want to drive, installed and logged in on this machine:
+  `codex` (Codex CLI) and/or `claude` (Claude Code). Agent River starts them
+  locally; without at least one of them there is nothing to drive.
+- A Telegram bot token: create a bot with [@BotFather](https://t.me/BotFather).
+- Your own numeric Telegram user id (for example from
+  [@userinfobot](https://t.me/userinfobot)) — needed to make yourself the owner.
+
+## Quickstart
 
 ```sh
 git clone https://github.com/Hsi431/agent-river.git agent-river
@@ -24,8 +33,29 @@ npm install
 node bin/codex-agent.js init
 ```
 
-Then fill `~/.config/codex-agent/telegram.env`, reload and enable the generated
-user units:
+`init` seeds the agent registry, writes the systemd user units, and creates
+`~/.config/codex-agent/telegram.env`. Then:
+
+1. Put the bot token in `~/.config/codex-agent/telegram.env`.
+
+2. Make yourself the owner and enable routing. Without this step the dashboard
+   answers every command read-only:
+
+```sh
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
+  --direct-send-user-add <your_telegram_user_id> \
+  --v2-enabled true --workspace-root /home/you --default-repo "$PWD"
+```
+
+3. Enable the exchange agents that sessions and runners will use:
+
+```sh
+node bin/codex-agent.js agent-enable --state ~/.codex/agent --agent codex --kind coding
+node bin/codex-agent.js agent-enable --state ~/.codex/agent --agent opus --kind review
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent --exchange-runner-enabled true
+```
+
+4. Reload and enable the generated user units:
 
 ```sh
 systemctl --user daemon-reload
@@ -35,11 +65,32 @@ systemctl --user enable --now codex-agent-codex-runner.timer
 systemctl --user enable --now codex-agent-exec-runner.timer
 ```
 
-Start a Telegram session:
+5. Message your bot on Telegram.
+
+### What using it looks like
+
+A multi-agent session (output abridged):
 
 ```text
-/session codex,opus -- your task
+you > /session codex,opus -- should we cache the tokenizer? repo=myproj
+bot > session opened (codex, opus), budget 20 messages / 20 minutes
+bot > [codex] Loading the tokenizer costs ~1.2s per turn; a module-level cache ...
+bot > [opus] Agree, but invalidate the cache when the model id changes ...
+you > /say <session> settle on the simplest option
+bot > [codex] Final: module-level cache keyed by model id.
+bot > session closed (budget exhausted), transcript saved
+you > /task <session> repo=myproj        ← turn the conclusion into an edit task
 ```
+
+A one-shot turn without a session:
+
+```text
+@claude repo=myproj -- review the current diff
+@codex repo=myproj mode=write -- fix the failing test
+```
+
+Write turns always come back to you as an approval button before anything
+runs.
 
 Optional: after `npm link`, the CLI is also available as `agent-river <cmd>`.
 
@@ -111,6 +162,14 @@ journalctl --user -u codex-agent-dashboard.service -n 20
 
 Owners are listed in `telegram_codex_policy.direct_send_user_allowlist`; this
 field is retained as the owner list after the v1 direct-send retirement.
+Manage it with:
+
+```sh
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
+  --direct-send-user-add <telegram_user_id>
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
+  --direct-send-user-remove <telegram_user_id>
+```
 
 Enable v2 routing and a workspace root:
 

@@ -223,11 +223,23 @@ test("exec runner envelope warns when session message has no bound repo", () => 
   const envelope = JSON.parse(buildExecEnvelope({
     agentHome: makeAgentHome("u12-exec-unbound-envelope-"),
     message: {
+      id: "msg_u12_exec_envelope",
       from: "codex",
       text: "U12 exec unbound prompt check.",
     },
   }));
 
+  assert.deepEqual(Object.keys(envelope), [
+    "agent_river_contract",
+    "message_id",
+    "sender",
+    "session_id",
+    "session_topic",
+    "repo_status",
+    "text",
+  ]);
+  assert.equal(envelope.agent_river_contract, "exec-v1");
+  assert.equal(envelope.message_id, "msg_u12_exec_envelope");
   assert.match(envelope.repo_status, /未綁定任何 repo/);
 });
 

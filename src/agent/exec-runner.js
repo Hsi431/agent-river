@@ -12,7 +12,7 @@ import {
   relaySessionReply,
   replyExchangeMessage,
 } from "./exchange.js";
-import { DISPATCH_CHANNEL, dispatchTargetAllowlist } from "./dispatch.js";
+import { createDispatchApproval, DISPATCH_CHANNEL, dispatchTargetAllowlist, parseDispatchProposal } from "./dispatch.js";
 import { getSession, isSessionExchangeEligible } from "./sessions.js";
 import { listRegisteredAgents } from "./registry.js";
 import { terminateGroup } from "./v2/kill.js";
@@ -80,6 +80,8 @@ export function pickEligibleExecMessage(agentHome, agentName, { now = Date.now()
 export function buildExecEnvelope({ agentHome, message, repoPromptLine = null }) {
   const session = message.session_id ? getSession(agentHome, message.session_id) : null;
   return `${JSON.stringify({
+    agent_river_contract: "exec-v1",
+    message_id: message.id,
     sender: String(message.from || ""),
     session_id: message.session_id || null,
     session_topic: session?.topic || null,
@@ -219,6 +221,18 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
     const relay = reply.session_id
       ? relaySessionReply({ agentHome, message, reply })
       : null;
+    const parsed = parseDispatchProposal(reply.text);
+    const proposed = parsed.valid
+      ? createDispatchApproval({
+        agentHome,
+        proposedBy: agent.name,
+        proposal: parsed.proposal,
+        parentMsgId: message.id,
+        parentDispatch: message.dispatch || null,
+        chatId: message.chat_id || null,
+        now,
+      })
+      : null;
     recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome: "replied", now, repoFallback: repoBinding.repoFallback });
     return summary(agent.name, {
       ran: true,
@@ -229,6 +243,8 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
       reply_error: run.replyError || null,
       relay_message_id: relay?.message?.id || null,
       relay_skipped: relay && !relay.relayed ? relay.reason : null,
+      dispatch_approval_id: proposed?.approval?.id || null,
+      dispatch_blocked_reason: proposed?.blocked ? proposed.reason : null,
     });
   }
 

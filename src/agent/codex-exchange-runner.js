@@ -13,7 +13,7 @@ import {
   replyExchangeMessage,
 } from "./exchange.js";
 import { isSessionExchangeEligible } from "./sessions.js";
-import { DISPATCH_CHANNEL, dispatchTargetAllowlist } from "./dispatch.js";
+import { createDispatchApproval, DISPATCH_CHANNEL, dispatchTargetAllowlist, parseDispatchProposal } from "./dispatch.js";
 import { realCodexRunner } from "./codex-runner.js";
 import { resolveMessageRepoBinding } from "./runner-repo.js";
 
@@ -118,6 +118,18 @@ export async function runCodexExchangeRunnerOnce({
       const relay = reply.session_id
         ? relaySessionReply({ agentHome, message, reply })
         : null;
+      const parsed = parseDispatchProposal(reply.text);
+      const proposed = parsed.valid
+        ? createDispatchApproval({
+          agentHome,
+          proposedBy: RUNNER_AGENT,
+          proposal: parsed.proposal,
+          parentMsgId: message.id,
+          parentDispatch: message.dispatch || null,
+          chatId: message.chat_id || null,
+          now,
+        })
+        : null;
       recordCodexDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now, repoFallback: repoBinding.repoFallback });
       return summary({
         ran: true,
@@ -128,6 +140,8 @@ export async function runCodexExchangeRunnerOnce({
         reply_error: runResult.replyError || null,
         relay_message_id: relay?.message?.id || null,
         relay_skipped: relay && !relay.relayed ? relay.reason : null,
+        dispatch_approval_id: proposed?.approval?.id || null,
+        dispatch_blocked_reason: proposed?.blocked ? proposed.reason : null,
       });
     }
 
