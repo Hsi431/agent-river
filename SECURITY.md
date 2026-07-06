@@ -26,8 +26,22 @@ Agent River is a local, single-operator control plane. It assumes:
 - one primary bridge/runner set owns an agent state directory.
 
 Agent state under `~/.codex/agent` can contain raw task, chat, prompt, reply,
-repository, and audit data. Keep it private, restrict filesystem access, and
-never commit it.
+repository, and audit data. Secret scanning redacts known patterns but does not
+guarantee the ledgers are free of sensitive content. Keep the state directory
+private, restrict filesystem access, never commit it, and treat backup,
+encryption, and retention as the operator's responsibility.
+
+## Repository Trust
+
+Pointing Agent River at a repository means its code will be executed: edit
+tasks run the repository's test command (e.g. `npm test`), and repository
+config (project `CLAUDE.md`, settings, hooks) is inherited by the runners.
+This is safe only for repositories you already trust to run locally.
+
+Do not register untrusted or unreviewed repositories. For code you do not
+trust, limit yourself to read-only review without automatic script execution;
+Agent River does not sandbox repository-defined commands (OS-level sandboxing
+is deferred to Phase 2).
 
 ## v2 Trust Model (local parity)
 
