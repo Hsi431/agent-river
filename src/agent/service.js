@@ -2,23 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defaultRunnerSettingsPath, defaultOpusEditSettingsPath } from "./exchange-runner.js";
-import { getTelegramCodexPolicy } from "./safety.js";
 
-// Generates systemd --user unit/timer TEXT for the telegram-codex paths. It
-// NEVER runs systemctl, never enables/starts anything, and never writes the bot
-// token. The token is supplied by the operator via an EnvironmentFile the unit
-// references. Both modes force approval-before-send, so unattended operation only
-// ever drafts pending approvals — it does not auto-send Codex replies.
-//
-//   mode "timer"  (default, fallback): a oneshot loop run periodically by a timer.
-//   mode "bridge" (R1, near-realtime):  a long-running long-poll bridge process,
-//                                        Type=simple + Restart=always, no timer.
-
-const SERVICE_NAME = "codex-agent-telegram.service";
-const TIMER_NAME = "codex-agent-telegram.timer";
-const BRIDGE_SERVICE_NAME = "codex-agent-telegram-bridge.service";
 const ENV_FILE = "%h/.config/codex-agent/telegram.env";
-const DEFAULT_BRIDGE_LONG_POLL_SECONDS = 25;
 const SERVICE_PATH = [
   path.join(os.homedir(), ".local", "bin"),
   path.join(os.homedir(), ".npm-global", "bin"),
@@ -26,150 +11,6 @@ const SERVICE_PATH = [
   "/usr/bin",
   "/bin",
 ].join(":");
-
-export function buildTelegramCodexService({ agentHome, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds, includeMemory, mode = "timer", longPollSeconds } = {}) {
-  if (mode === "bridge") {
-    return buildBridgeService({ agentHome, repoDir, nodePath, includeMemory, longPollSeconds });
-  }
-  if (mode !== "timer") {
-    throw new Error(`Unknown service mode: ${mode}`);
-  }
-  const policy = getTelegramCodexPolicy(agentHome);
-  const interval = Number.isFinite(Number(intervalSeconds)) && Number(intervalSeconds) > 0
-    ? Math.floor(Number(intervalSeconds))
-    : (policy.global_interval_seconds || 60);
-  const useMemory = includeMemory === undefined ? Boolean(policy.memory_enabled) : Boolean(includeMemory);
-  const memoryState = path.join(os.homedir(), ".codex", "memory-river");
-
-  const args = [
-    path.join(repoDir, "bin", "codex-agent.js"),
-    "telegram-codex-loop",
-    "--state", agentHome,
-    "--transport", "curl",
-    "--allow-real-codex",
-    "--iterations", "1",
-    "--sleep-seconds", "0",
-  ];
-  if (useMemory) {
-    args.push("--memory-state", memoryState);
-  }
-  const execStart = `${nodePath} ${args.join(" ")}`;
-
-  const unit = [
-    "[Unit]",
-    "Description=Codex Agent Telegram bounded loop (approval-before-send only)",
-    "",
-    "[Service]",
-    "Type=oneshot",
-    `WorkingDirectory=${repoDir}`,
-    `EnvironmentFile=${ENV_FILE}`,
-    `Environment=PATH=${SERVICE_PATH}`,
-    `ExecStart=${execStart}`,
-    "",
-  ].join("\n");
-
-  const timer = [
-    "[Unit]",
-    "Description=Run the Codex Agent Telegram bounded loop periodically",
-    "",
-    "[Timer]",
-    "OnBootSec=60",
-    `OnUnitActiveSec=${interval}`,
-    `Unit=${SERVICE_NAME}`,
-    "Persistent=false",
-    "",
-    "[Install]",
-    "WantedBy=timers.target",
-    "",
-  ].join("\n");
-
-  return {
-    mode: "timer",
-    unit_name: SERVICE_NAME,
-    timer_name: TIMER_NAME,
-    env_file: ENV_FILE,
-    interval_seconds: interval,
-    memory: useMemory,
-    unit,
-    timer,
-  };
-}
-
-function buildBridgeService({ agentHome, repoDir, nodePath, includeMemory, longPollSeconds }) {
-  const policy = getTelegramCodexPolicy(agentHome);
-  const useMemory = includeMemory === undefined ? Boolean(policy.memory_enabled) : Boolean(includeMemory);
-  const memoryState = path.join(os.homedir(), ".codex", "memory-river");
-  const longPoll = Number.isFinite(Number(longPollSeconds)) && Number(longPollSeconds) >= 0
-    ? Math.floor(Number(longPollSeconds))
-    : DEFAULT_BRIDGE_LONG_POLL_SECONDS;
-
-  const args = [
-    path.join(repoDir, "bin", "codex-agent.js"),
-    "telegram-codex-bridge",
-    "--state", agentHome,
-    "--transport", "curl",
-    "--allow-real-codex",
-    "--long-poll-seconds", String(longPoll),
-  ];
-  if (useMemory) {
-    args.push("--memory-state", memoryState);
-  }
-  const execStart = `${nodePath} ${args.join(" ")}`;
-
-  const unit = [
-    "[Unit]",
-    "Description=Codex Agent Telegram bridge (long-poll, approval-before-send only)",
-    "",
-    "[Service]",
-    "Type=simple",
-    `WorkingDirectory=${repoDir}`,
-    `EnvironmentFile=${ENV_FILE}`,
-    `Environment=PATH=${SERVICE_PATH}`,
-    `ExecStart=${execStart}`,
-    "Restart=always",
-    "RestartSec=5",
-    "",
-    "[Install]",
-    "WantedBy=default.target",
-    "",
-  ].join("\n");
-
-  return {
-    mode: "bridge",
-    unit_name: BRIDGE_SERVICE_NAME,
-    timer_name: null,
-    env_file: ENV_FILE,
-    long_poll_seconds: longPoll,
-    memory: useMemory,
-    unit,
-    timer: null,
-  };
-}
-
-export function writeTelegramCodexService({ agentHome, dir, repoDir, intervalSeconds, includeMemory, mode = "timer", longPollSeconds } = {}) {
-  if (!dir) {
-    throw new Error("Missing required --dir");
-  }
-  const built = buildTelegramCodexService({ agentHome, repoDir, intervalSeconds, includeMemory, mode, longPollSeconds });
-  fs.mkdirSync(dir, { recursive: true });
-  const unitPath = path.join(dir, built.unit_name);
-  fs.writeFileSync(unitPath, built.unit);
-  let timerPath = null;
-  if (built.timer && built.timer_name) {
-    timerPath = path.join(dir, built.timer_name);
-    fs.writeFileSync(timerPath, built.timer);
-  }
-  return {
-    mode: built.mode,
-    unit_path: unitPath,
-    timer_path: timerPath,
-    unit_name: built.unit_name,
-    timer_name: built.timer_name,
-    env_file: built.env_file,
-    note: "Files written but NOT enabled. This tool never runs systemctl.",
-    next_steps: telegramCodexServiceStatus({ dir, mode: built.mode }).commands,
-  };
-}
 
 // ── Opus exchange auto-runner service ────────────────────────────────────────
 //
@@ -418,39 +259,266 @@ export function writeOpusEditSettings({ settingsPath, repoDir } = {}) {
   return { path: dest, written: true };
 }
 
-export function telegramCodexServiceStatus({ dir, mode = "timer" } = {}) {
-  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
-  if (mode === "bridge") {
-    const unitPath = path.join(targetDir, BRIDGE_SERVICE_NAME);
-    return {
-      mode: "bridge",
-      dir: targetDir,
-      unit: { name: BRIDGE_SERVICE_NAME, path: unitPath, exists: fs.existsSync(unitPath) },
-      timer: null,
-      env_file: ENV_FILE,
-      note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
-      commands: {
-        reload: "systemctl --user daemon-reload",
-        enable: `systemctl --user enable --now ${BRIDGE_SERVICE_NAME}`,
-        disable: `systemctl --user disable --now ${BRIDGE_SERVICE_NAME}`,
-        logs: `journalctl --user -u ${BRIDGE_SERVICE_NAME}`,
-      },
-    };
-  }
-  const unitPath = path.join(targetDir, SERVICE_NAME);
-  const timerPath = path.join(targetDir, TIMER_NAME);
+// ── Codex exchange auto-runner service ───────────────────────────────────────
+//
+// Mirrors the Opus runner service, but ExecStart runs:
+//   node bin/codex-agent.js exchange-runner --agent codex --once
+// No settings file needed (codex uses its own sandbox via codex exec).
+
+const CODEX_RUNNER_SERVICE_NAME = "codex-agent-codex-runner.service";
+const CODEX_RUNNER_TIMER_NAME = "codex-agent-codex-runner.timer";
+const DEFAULT_CODEX_RUNNER_INTERVAL_SECONDS = 90;
+
+export function buildCodexRunnerService({ repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const interval = Number.isFinite(Number(intervalSeconds)) && Number(intervalSeconds) > 0
+    ? Math.floor(Number(intervalSeconds))
+    : DEFAULT_CODEX_RUNNER_INTERVAL_SECONDS;
+
+  const args = [
+    path.join(repoDir, "bin", "codex-agent.js"),
+    "exchange-runner",
+    "--agent", "codex",
+    "--once",
+  ];
+  const execStart = `${nodePath} ${args.join(" ")}`;
+
+  const unit = [
+    "[Unit]",
+    "Description=Codex Agent Codex exchange auto-runner (one-shot, mailbox task executor)",
+    "",
+    "[Service]",
+    "Type=oneshot",
+    `WorkingDirectory=${repoDir}`,
+    `Environment=PATH=${SERVICE_PATH}`,
+    `ExecStart=${execStart}`,
+    "",
+  ].join("\n");
+
+  const timer = [
+    "[Unit]",
+    "Description=Run the Codex exchange auto-runner periodically",
+    "",
+    "[Timer]",
+    "OnBootSec=2min",
+    `OnUnitActiveSec=${interval}s`,
+    `Unit=${CODEX_RUNNER_SERVICE_NAME}`,
+    "Persistent=false",
+    "",
+    "[Install]",
+    "WantedBy=timers.target",
+    "",
+  ].join("\n");
+
   return {
-    mode: "timer",
+    unit_name: CODEX_RUNNER_SERVICE_NAME,
+    timer_name: CODEX_RUNNER_TIMER_NAME,
+    interval_seconds: interval,
+    unit,
+    timer,
+  };
+}
+
+export function writeCodexRunnerService({ dir, repoDir, nodePath, intervalSeconds } = {}) {
+  if (!dir) {
+    throw new Error("Missing required --dir");
+  }
+  const built = buildCodexRunnerService({ repoDir, nodePath, intervalSeconds });
+  fs.mkdirSync(dir, { recursive: true });
+  const unitPath = path.join(dir, built.unit_name);
+  const timerPath = path.join(dir, built.timer_name);
+  fs.writeFileSync(unitPath, built.unit);
+  fs.writeFileSync(timerPath, built.timer);
+  return {
+    unit_path: unitPath,
+    timer_path: timerPath,
+    unit_name: built.unit_name,
+    timer_name: built.timer_name,
+    note: "Files written but NOT enabled. This tool never runs systemctl.",
+    next_steps: codexRunnerServiceStatus({ dir }).commands,
+  };
+}
+
+export function codexRunnerServiceStatus({ dir, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
+  const built = buildCodexRunnerService({ repoDir, nodePath, intervalSeconds });
+  const unitPath = path.join(targetDir, CODEX_RUNNER_SERVICE_NAME);
+  const timerPath = path.join(targetDir, CODEX_RUNNER_TIMER_NAME);
+  return {
     dir: targetDir,
-    unit: { name: SERVICE_NAME, path: unitPath, exists: fs.existsSync(unitPath) },
-    timer: { name: TIMER_NAME, path: timerPath, exists: fs.existsSync(timerPath) },
+    unit: { name: CODEX_RUNNER_SERVICE_NAME, path: unitPath, ...fileDrift(unitPath, built.unit) },
+    timer: { name: CODEX_RUNNER_TIMER_NAME, path: timerPath, ...fileDrift(timerPath, built.timer) },
+    note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
+    commands: {
+      reload: "systemctl --user daemon-reload",
+      enable: `systemctl --user enable --now ${CODEX_RUNNER_TIMER_NAME}`,
+      disable: `systemctl --user disable --now ${CODEX_RUNNER_TIMER_NAME}`,
+      logs: `journalctl --user -u ${CODEX_RUNNER_SERVICE_NAME}`,
+    },
+  };
+}
+
+// ── Exec agent runner service ───────────────────────────────────────────────
+
+const EXEC_RUNNER_SERVICE_NAME = "codex-agent-exec-runner.service";
+const EXEC_RUNNER_TIMER_NAME = "codex-agent-exec-runner.timer";
+const DEFAULT_EXEC_RUNNER_INTERVAL_SECONDS = 90;
+
+export function buildExecRunnerService({ agentHome, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const interval = Number.isFinite(Number(intervalSeconds)) && Number(intervalSeconds) > 0
+    ? Math.floor(Number(intervalSeconds))
+    : DEFAULT_EXEC_RUNNER_INTERVAL_SECONDS;
+  const args = [
+    path.join(repoDir, "bin", "codex-agent.js"),
+    "exec-runner-once",
+    "--state", agentHome,
+    "--repo", repoDir,
+  ];
+  const execStart = `${nodePath} ${args.join(" ")}`;
+  const unit = [
+    "[Unit]",
+    "Description=Codex Agent exec-style agent runner (one-shot, stdin/stdout mailbox executor)",
+    "",
+    "[Service]",
+    "Type=oneshot",
+    `WorkingDirectory=${repoDir}`,
+    `Environment=PATH=${SERVICE_PATH}`,
+    `ExecStart=${execStart}`,
+    "",
+  ].join("\n");
+  const timer = [
+    "[Unit]",
+    "Description=Run the exec-style agent runner periodically",
+    "",
+    "[Timer]",
+    "OnBootSec=2min",
+    `OnUnitActiveSec=${interval}s`,
+    `Unit=${EXEC_RUNNER_SERVICE_NAME}`,
+    "Persistent=false",
+    "",
+    "[Install]",
+    "WantedBy=timers.target",
+    "",
+  ].join("\n");
+  return {
+    unit_name: EXEC_RUNNER_SERVICE_NAME,
+    timer_name: EXEC_RUNNER_TIMER_NAME,
+    interval_seconds: interval,
+    unit,
+    timer,
+  };
+}
+
+export function writeExecRunnerService({ agentHome, dir, repoDir, nodePath, intervalSeconds } = {}) {
+  if (!dir) {
+    throw new Error("Missing required --dir");
+  }
+  const built = buildExecRunnerService({ agentHome, repoDir, nodePath, intervalSeconds });
+  fs.mkdirSync(dir, { recursive: true });
+  const unitPath = path.join(dir, built.unit_name);
+  const timerPath = path.join(dir, built.timer_name);
+  fs.writeFileSync(unitPath, built.unit);
+  fs.writeFileSync(timerPath, built.timer);
+  return {
+    unit_path: unitPath,
+    timer_path: timerPath,
+    unit_name: built.unit_name,
+    timer_name: built.timer_name,
+    note: "Files written but NOT enabled. This tool never runs systemctl.",
+    next_steps: execRunnerServiceStatus({ agentHome, dir }).commands,
+  };
+}
+
+export function execRunnerServiceStatus({ agentHome, dir, repoDir = process.cwd(), nodePath = process.execPath, intervalSeconds } = {}) {
+  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
+  const built = buildExecRunnerService({ agentHome, repoDir, nodePath, intervalSeconds });
+  const unitPath = path.join(targetDir, EXEC_RUNNER_SERVICE_NAME);
+  const timerPath = path.join(targetDir, EXEC_RUNNER_TIMER_NAME);
+  return {
+    dir: targetDir,
+    unit: { name: EXEC_RUNNER_SERVICE_NAME, path: unitPath, ...fileDrift(unitPath, built.unit) },
+    timer: { name: EXEC_RUNNER_TIMER_NAME, path: timerPath, ...fileDrift(timerPath, built.timer) },
+    note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
+    commands: {
+      reload: "systemctl --user daemon-reload",
+      enable: `systemctl --user enable --now ${EXEC_RUNNER_TIMER_NAME}`,
+      disable: `systemctl --user disable --now ${EXEC_RUNNER_TIMER_NAME}`,
+      logs: `journalctl --user -u ${EXEC_RUNNER_SERVICE_NAME}`,
+    },
+  };
+}
+
+// ── v3 dashboard bridge service ─────────────────────────────────────────────
+
+const DASHBOARD_SERVICE_NAME = "codex-agent-dashboard.service";
+const DEFAULT_DASHBOARD_LONG_POLL_SECONDS = 25;
+
+export function buildDashboardService({ agentHome, repoDir = process.cwd(), nodePath = process.execPath, longPollSeconds } = {}) {
+  const longPoll = Number.isFinite(Number(longPollSeconds)) && Number(longPollSeconds) >= 0
+    ? Math.floor(Number(longPollSeconds))
+    : DEFAULT_DASHBOARD_LONG_POLL_SECONDS;
+  const args = [
+    path.join(repoDir, "bin", "codex-agent.js"),
+    "dashboard-bridge",
+    "--state", agentHome,
+    "--transport", "curl",
+    "--long-poll-seconds", String(longPoll),
+  ];
+  const unit = [
+    "[Unit]",
+    "Description=Codex Agent v3 Telegram dashboard bridge",
+    "",
+    "[Service]",
+    "Type=simple",
+    `WorkingDirectory=${repoDir}`,
+    `EnvironmentFile=${ENV_FILE}`,
+    `Environment=PATH=${SERVICE_PATH}`,
+    `ExecStart=${nodePath} ${args.join(" ")}`,
+    "Restart=always",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
+  return {
+    unit_name: DASHBOARD_SERVICE_NAME,
+    env_file: ENV_FILE,
+    long_poll_seconds: longPoll,
+    unit,
+  };
+}
+
+export function writeDashboardService({ agentHome, dir, repoDir, nodePath, longPollSeconds } = {}) {
+  if (!dir) {
+    throw new Error("Missing required --dir");
+  }
+  const built = buildDashboardService({ agentHome, repoDir, nodePath, longPollSeconds });
+  fs.mkdirSync(dir, { recursive: true });
+  const unitPath = path.join(dir, built.unit_name);
+  fs.writeFileSync(unitPath, built.unit);
+  return {
+    unit_path: unitPath,
+    unit_name: built.unit_name,
+    env_file: built.env_file,
+    note: "Files written but NOT enabled. This tool never runs systemctl.",
+    next_steps: dashboardServiceStatus({ dir }).commands,
+  };
+}
+
+export function dashboardServiceStatus({ dir, agentHome, repoDir = process.cwd(), nodePath = process.execPath, longPollSeconds } = {}) {
+  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
+  const built = buildDashboardService({ agentHome, repoDir, nodePath, longPollSeconds });
+  const unitPath = path.join(targetDir, DASHBOARD_SERVICE_NAME);
+  return {
+    dir: targetDir,
+    unit: { name: DASHBOARD_SERVICE_NAME, path: unitPath, ...fileDrift(unitPath, built.unit) },
     env_file: ENV_FILE,
     note: "Files are generated only; this tool never runs systemctl, enables, or starts anything.",
     commands: {
       reload: "systemctl --user daemon-reload",
-      enable: `systemctl --user enable --now ${TIMER_NAME}`,
-      disable: `systemctl --user disable --now ${TIMER_NAME}`,
-      logs: `journalctl --user -u ${SERVICE_NAME}`,
+      enable: `systemctl --user enable --now ${DASHBOARD_SERVICE_NAME}`,
+      disable: `systemctl --user disable --now ${DASHBOARD_SERVICE_NAME}`,
+      logs: `journalctl --user -u ${DASHBOARD_SERVICE_NAME}`,
     },
   };
 }

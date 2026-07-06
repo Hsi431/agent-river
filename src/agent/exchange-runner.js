@@ -9,9 +9,12 @@ import {
   claimExchangeMessage,
   listExchangeInbox,
   releaseExchangeClaim,
+  relaySessionReply,
   replyExchangeMessage,
 } from "./exchange.js";
+import { isSessionExchangeEligible } from "./sessions.js";
 import { createDispatchApproval, DISPATCH_CHANNEL, parseDispatchProposal } from "./dispatch.js";
+import { resolveMessageRepoBinding } from "./runner-repo.js";
 
 // Opus-side exchange auto-runner (v1). Single-shot: pick at most one eligible
 // message addressed to opus over Telegram from codex, claim it in Node, then
@@ -210,9 +213,10 @@ export async function runExchangeRunnerOnce({
       return summary({ ran: false, reason: "daily_max" });
     }
 
-    const message = pickEligibleMessage(agentHome);
+    const skippedSession = recordFirstSkippedSessionMessage(agentHome, paths, now);
+    const message = pickEligibleMessage(agentHome, { now });
     if (!message) {
-      return summary({ ran: false, reason: "no_eligible_message" });
+      return summary(skippedSession || { ran: false, reason: "no_eligible_message" });
     }
 
     // Fail closed: the restricted Claude settings file is the safety envelope
@@ -234,8 +238,9 @@ export async function runExchangeRunnerOnce({
         leaseSeconds: Number(policy.exchange_runner_timeout_seconds) + LOCK_TTL_BUFFER_SECONDS,
       });
     } catch (error) {
-      recordDispatch(paths, { messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", model: null, now });
-      return summary({ ran: false, reason: "claim_failed", message_id: message.id, error: error.message });
+      const sanitized = sanitizeError(error.message);
+      recordDispatch(paths, { messageId: message.id, attempt: priorAttempts, outcome: "claim_failed", model: null, now, error: sanitized });
+      return summary({ ran: false, reason: "claim_failed", message_id: message.id, error: sanitized });
     }
 
     const attempt = priorAttempts + 1;
@@ -243,7 +248,8 @@ export async function runExchangeRunnerOnce({
     const timeoutSeconds = Number(policy.exchange_runner_timeout_seconds);
     const chatId = message.chat_id || null;
     const sessionId = chatId ? readRunnerSession(paths, chatId) : null;
-    const invocation = buildClaudeInvocation({ repoDir, agentHome, msgId: message.id, model, settingsPath, timeoutSeconds, sessionId });
+    const repoBinding = resolveMessageRepoBinding({ message, repoDir, workspaceRoot: policy.workspace_root });
+    const invocation = buildClaudeInvocation({ repoDir: repoBinding.cwd, agentHome, msgId: message.id, model, settingsPath, timeoutSeconds, sessionId, repoPromptLine: repoBinding.promptLine });
     const logPath = path.join(paths.exchangeRunnerLogsDir, `${message.id}.attempt-${attempt}.log`);
 
     let spawnResult;
@@ -275,6 +281,9 @@ export async function runExchangeRunnerOnce({
       }
     }
     if (reply) {
+      const relay = reply.session_id
+        ? relaySessionReply({ agentHome, message, reply })
+        : null;
       const parsed = parseDispatchProposal(reply.text);
       const proposed = parsed.valid
         ? createDispatchApproval({
@@ -287,7 +296,7 @@ export async function runExchangeRunnerOnce({
           now,
         })
         : null;
-      recordDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now });
+      recordDispatch(paths, { messageId: message.id, attempt, outcome: "replied", model, now, repoFallback: repoBinding.repoFallback });
       return summary({
         ran: true,
         reason: "replied",
@@ -295,6 +304,8 @@ export async function runExchangeRunnerOnce({
         attempt,
         spawn: spawnResult,
         reply_error: spawnResult.replyError || null,
+        relay_message_id: relay?.message?.id || null,
+        relay_skipped: relay && !relay.relayed ? relay.reason : null,
         dispatch_approval_id: proposed?.approval?.id || null,
         dispatch_blocked_reason: proposed?.blocked ? proposed.reason : null,
       });
@@ -302,7 +313,7 @@ export async function runExchangeRunnerOnce({
 
     if (attempt < maxAttempts) {
       safeRelease(agentHome, message.id);
-      recordDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now });
+      recordDispatch(paths, { messageId: message.id, attempt, outcome: "failed_released", model, now, error: spawnError(spawnResult), repoFallback: repoBinding.repoFallback });
       return summary({
         ran: true,
         reason: "failed_released",
@@ -323,7 +334,7 @@ export async function runExchangeRunnerOnce({
       blockedOk = false;
       safeRelease(agentHome, message.id);
     }
-    recordDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now });
+    recordDispatch(paths, { messageId: message.id, attempt, outcome: "blocked_terminal", model, now, error: spawnError(spawnResult), repoFallback: repoBinding.repoFallback });
     return summary({
       ran: true,
       reason: blockedOk ? "blocked_terminal" : "blocked_reply_failed",
@@ -339,10 +350,11 @@ export async function runExchangeRunnerOnce({
 
 // Pure construction of the headless Claude invocation. Only the message id and
 // fixed boilerplate go into argv — never the raw message text.
-export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settingsPath, maxTurns = 40, sessionId = null }) {
+export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settingsPath, maxTurns = 40, sessionId = null, repoPromptLine = null }) {
   const prompt = [
     `You are the Claude agent for Agent River. Do not call yourself Opus unless the owner explicitly asks about the legacy @opus alias.`,
     `Telegram entrypoints: @claude is the preferred user-facing name; @opus is a backwards-compatible alias for the same Claude agent.`,
+    repoPromptLine || `本 session 綁定 repo:${repoDir}`,
     `Exchange message ${msgId} is ALREADY claimed. Do NOT claim, release, reply, or create new exchange messages.`,
     `Step 1 — read the thread:`,
     `  node bin/codex-agent.js exchange-thread --state ${agentHome} --id ${msgId}`,
@@ -414,15 +426,36 @@ function defaultSpawnClaude({ invocation, timeoutSeconds, execFileImpl = execFil
   });
 }
 
-export function pickEligibleMessage(agentHome) {
+export function pickEligibleMessage(agentHome, { now = Date.now() } = {}) {
   const expectedFrom = getPrimaryAgentId(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
     .filter((message) => message.to === RUNNER_AGENT
-      && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
-      && message.from === expectedFrom
+      && (message.session_id
+        ? isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }).eligible
+        : ((message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
+          && message.from === expectedFrom))
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
   return eligible[0] || null;
+}
+
+function recordFirstSkippedSessionMessage(agentHome, paths, now) {
+  const skipped = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
+    .filter((message) => message.to === RUNNER_AGENT && message.session_id && isAvailableClaim(message.claim))
+    .map((message) => ({ message, gate: isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }) }))
+    .filter(({ gate }) => !gate.eligible)
+    .sort((a, b) => String(a.message.created_at || "").localeCompare(String(b.message.created_at || "")))[0];
+  if (!skipped) {
+    return null;
+  }
+  const reason = skipped.gate.reason || "session_not_eligible";
+  const alreadyRecorded = readJsonl(paths.exchangeRunnerDispatch)
+    .some((row) => row.message_id === skipped.message.id && String(row.outcome || "").startsWith("session_skip:"));
+  if (alreadyRecorded) {
+    return null;
+  }
+  recordDispatch(paths, { messageId: skipped.message.id, attempt: 0, outcome: `session_skip:${reason}`, model: null, now });
+  return { ran: false, reason, message_id: skipped.message.id };
 }
 
 function isAvailableClaim(claim) {
@@ -446,12 +479,14 @@ function dispatchCountForDay(paths, now) {
     .length;
 }
 
-function recordDispatch(paths, { messageId, attempt, outcome, model, now }) {
+function recordDispatch(paths, { messageId, attempt, outcome, model, now, error = null, repoFallback = null }) {
   appendJsonl(paths.exchangeRunnerDispatch, {
     message_id: messageId,
     attempt,
     outcome,
     model: model || null,
+    ...(error ? { error: sanitizeError(error) } : {}),
+    ...(repoFallback ? { repo_fallback: repoFallback } : {}),
     created_at: new Date(now).toISOString(),
   });
 }
@@ -466,6 +501,10 @@ function safeRelease(agentHome, messageId) {
 
 function sanitizeError(message) {
   return String(message || "").replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+function spawnError(spawnResult) {
+  return sanitizeError(spawnResult?.replyError || spawnResult?.error || spawnResult?.stderr || "runner produced no reply");
 }
 
 function lockTtlSeconds(agentHome) {

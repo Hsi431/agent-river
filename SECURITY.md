@@ -29,6 +29,35 @@ Agent state under `~/.codex/agent` can contain raw task, chat, prompt, reply,
 repository, and audit data. Keep it private, restrict filesystem access, and
 never commit it.
 
+## v2 Trust Model (local parity)
+
+Running an agent over Telegram (v2 path: `@claude ...` / `@codex ...`) is
+treated as equivalent to the owner running `claude` / `codex` by hand in that
+repo. Any risk that exists when running those tools locally — project
+`CLAUDE.md`, project settings, hooks, MCP, the model reading other readable
+files — is an **accepted residual risk**.
+
+The security boundary for v2 is exactly three things:
+
+1. **Telegram owner allowlist** — only allowlisted users may drive the bot.
+2. **The provider's own permission system** — the same profiles used locally.
+3. **Capability ceiling** — Telegram may select only `read` or `write`
+   (`workspace-write`). `danger-full-access` / `bypassPermissions` are **never**
+   selectable from Telegram; they require a local, short-lived toggle. A stolen
+   Telegram token must not equal unattended full RCE.
+
+### Residual risks (accepted, not eliminated in Phase 1)
+
+- Project `CLAUDE.md` files run at model startup and are not isolated.
+- Project `.claude/settings.json`, hooks, and MCP configuration are inherited
+  (local parity); an untrusted repo's settings could influence the model.
+- `cwd` + `--add-dir` is not an OS write sandbox; write confinement is the
+  provider permission profile, same as local.
+- A bare-repo or worktree layout may affect the `git rev-parse --show-toplevel`
+  boundary check; the Node validator is best-effort (TOCTOU is acknowledged).
+- OS-level sandbox (bubblewrap/systemd), per-action approval, and project-settings
+  isolation are **deferred** to Phase 2.
+
 ## Authority Levels
 
 Gateway allowlist membership grants operator access to bounded gateway and

@@ -4,14 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runAgentCli } from "../src/agent/cli.js";
-import { createChatDraft, createChatHandoff, enqueueChatMessage, queueChatReply } from "../src/agent/chat.js";
-import { codexReplyOnce } from "../src/agent/codex-reply.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "../src/agent/orchestrator.js";
 import { runEditStep, runPlanStep } from "../src/agent/worker.js";
 import { readRuns, transitionTask, writeTask } from "../src/agent/tasks.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { buildMemoryContextBlock } from "../src/agent/memory-adapter.js";
-import { checkSafety, setDailyTokenBudget, setKillSwitch } from "../src/agent/safety.js";
+import { checkSafety, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { approveDispatch, createDispatchApproval } from "../src/agent/dispatch.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 import { redactSecrets, scanSecrets } from "../src/lib/secret-scan.js";
@@ -136,29 +134,6 @@ test("plan prompt uses Traditional Chinese for owner-facing dispatch reports", a
   assert.match(prompt, /Traditional Chinese/);
   assert.match(prompt, /return that owner-facing report directly/i);
 });
-
-test("edit prompt includes the approved plan handoff", async () => {
-  let prompt = "";
-  await runEditStep({
-    task: {
-      id: "task_edit_handoff",
-      repo: "/repo/agent-river",
-      request: "照這個 plan 修正",
-      parent_task_id: "task_plan_source",
-      plan_summary: "1. 修正 routing\n2. 加入回歸測試",
-      chat_id: "456",
-    },
-    contextBlock: "",
-    runner: async (args) => {
-      prompt = args.prompt;
-      return { text: "done", sessionPath: null, exit: 0, tokens: 1 };
-    },
-  });
-
-  assert.match(prompt, /Approved plan source: task_plan_source/);
-  assert.match(prompt, /1\. 修正 routing/);
-});
-
 test("agent run skips tasks pending approval until approved", async () => {
   const agentHome = makeAgentHome("codex-agent-approval-pending-");
   const memoryStateHome = undefined;
@@ -273,6 +248,33 @@ test("agent worker prompt includes memory context block", async () => {
   assert.match(capturedPrompt, /Memory-backed planning context/);
   assert.match(capturedPrompt, /Plan with memory/);
   assert.equal(readRuns(agentHome).length, 1);
+  assert.equal(getAgentStatus({ agentHome, id: task.id }).task.status, "done");
+});
+
+test("agent run enables memory context when policy memory_enabled is true", async () => {
+  const agentHome = makeAgentHome("codex-agent-policy-memory-");
+  setTelegramCodexPolicy(agentHome, {
+    default_repo: "/repo/memory-river",
+    memory_enabled: true,
+  });
+  const task = submitAgentTask({
+    agentHome,
+    repo: "/repo/memory-river",
+    request: "Plan with policy memory.",
+  });
+  let contextEnabled = null;
+
+  await runAgentOnce({
+    agentHome,
+    memoryStateHome: undefined,
+    memoryContextImpl: async ({ enabled }) => {
+      contextEnabled = enabled;
+      return enabled ? "Policy memory context" : "";
+    },
+    runner: async () => ({ text: "planned", sessionPath: null, exit: 0, tokens: 5 }),
+  });
+
+  assert.equal(contextEnabled, true);
   assert.equal(getAgentStatus({ agentHome, id: task.id }).task.status, "done");
 });
 
@@ -643,495 +645,6 @@ test("agent CLI approves and rejects tasks", async () => {
   assert.equal(rejected.task.approval, "rejected");
   assert.equal(rejected.task.status, "failed");
 });
-
-test("agent CLI lists inbox messages and queues manual replies", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-inbox-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const chat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "456",
-    text: "hello bridge",
-  });
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["inbox", "--state", agentHome]);
-    await runAgentCli(["reply", "--state", agentHome, "--id", chat.id, "--text", "manual reply"]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const inbox = JSON.parse(lines[0]);
-  const reply = JSON.parse(lines[1]);
-
-  assert.equal(inbox.messages.length, 1);
-  assert.equal(inbox.latest_inbox_id, chat.id);
-  assert.equal(inbox.messages[0].text, "hello bridge");
-  assert.equal(reply.reply.inbox_id, chat.id);
-  assert.equal(reply.reply.text, "manual reply");
-});
-
-test("agent CLI queues a reply to the latest inbox entry", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-reply-latest-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const first = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "111",
-    text: "first",
-  });
-  const latest = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "latest",
-  });
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["reply-latest", "--state", agentHome, "--text", "latest reply"]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const reply = JSON.parse(lines[0]);
-
-  assert.notEqual(reply.reply.inbox_id, first.id);
-  assert.equal(reply.reply.inbox_id, latest.id);
-  assert.equal(reply.reply.chat_id, "222");
-});
-
-test("agent CLI creates chat drafts and reports chat status", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-draft-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const chat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "456",
-    text: "please draft this",
-  });
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["draft", "--state", agentHome, "--id", chat.id]);
-    await runAgentCli(["chat-status", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const draft = JSON.parse(lines[0]);
-  const status = JSON.parse(lines[1]);
-  const draftText = fs.readFileSync(draft.draft.path, "utf8");
-
-  assert.equal(draft.draft.inbox_id, chat.id);
-  assert.match(draftText, /please draft this/);
-  assert.match(draftText, /Do not claim autonomous execution/);
-  assert.equal(status.inbox_count, 1);
-  assert.equal(status.latest_inbox_id, chat.id);
-  assert.equal(status.pending_replies, 0);
-  assert.equal(status.sent_replies, 0);
-  assert.equal(status.latest_draft, draft.draft.path);
-  assert.equal(status.pending_handoffs, 0);
-  assert.equal(status.latest_handoff_id, null);
-  assert.equal(status.latest_pending_handoff_id, null);
-});
-
-test("agent CLI drafts latest and replies from file", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-draft-latest-");
-  const replyFile = path.join(agentHome, "reply.txt");
-  setAllowlistedConfig(agentHome, "user-chat");
-  enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "111",
-    text: "older",
-  });
-  const latest = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "newer",
-  });
-  fs.writeFileSync(replyFile, "reply from file\n");
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["draft-latest", "--state", agentHome]);
-    await runAgentCli(["reply-latest", "--state", agentHome, "--from-file", replyFile]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const draft = JSON.parse(lines[0]);
-  const reply = JSON.parse(lines[1]);
-
-  assert.equal(draft.draft.inbox_id, latest.id);
-  assert.equal(reply.reply.inbox_id, latest.id);
-  assert.equal(reply.reply.text, "reply from file");
-});
-
-test("agent CLI from-file replies still reject secrets and empty text", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-from-file-guard-");
-  const secretFile = path.join(agentHome, "secret.txt");
-  const emptyFile = path.join(agentHome, "empty.txt");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const chat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "guard this",
-  });
-  fs.writeFileSync(secretFile, "token = sk-123456789012345678901234567890\n");
-  fs.writeFileSync(emptyFile, "\n  \n");
-
-  await assert.rejects(
-    () => runAgentCli(["reply", "--state", agentHome, "--id", chat.id, "--from-file", secretFile]),
-    /Reply may contain a secret/,
-  );
-  await assert.rejects(
-    () => runAgentCli(["reply", "--state", agentHome, "--id", chat.id, "--from-file", emptyFile]),
-    /Reply text is empty/,
-  );
-});
-
-test("agent chat status folds pending and sent replies", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-chat-status-replies-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const chat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "status counts",
-  });
-  let lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["reply", "--state", agentHome, "--id", chat.id, "--text", "pending"]);
-    await runAgentCli(["chat-status", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const reply = JSON.parse(lines[0]);
-  const pending = JSON.parse(lines[1]);
-  markReplySentForTest(agentHome, reply.reply.id);
-  lines = [];
-  console.log = (value) => lines.push(String(value));
-  try {
-    await runAgentCli(["chat-status", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-  const sent = JSON.parse(lines[0]);
-
-  assert.equal(pending.pending_replies, 1);
-  assert.equal(pending.sent_replies, 0);
-  assert.equal(sent.pending_replies, 0);
-  assert.equal(sent.sent_replies, 1);
-});
-
-test("agent CLI creates and completes chat handoffs", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-handoff-");
-  const replyFile = path.join(agentHome, "handoff-reply.txt");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const chat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "handoff this",
-  });
-  fs.writeFileSync(replyFile, "handoff reply\n");
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["handoff", "--state", agentHome, "--id", chat.id]);
-    await runAgentCli(["handoff-status", "--state", agentHome]);
-    const handoff = JSON.parse(lines[0]).handoff;
-    await runAgentCli(["handoff-complete", "--state", agentHome, "--id", handoff.id, "--from-file", replyFile]);
-    await runAgentCli(["handoff-status", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const created = JSON.parse(lines[0]).handoff;
-  const pending = JSON.parse(lines[1]);
-  const completed = JSON.parse(lines[2]);
-  const finalStatus = JSON.parse(lines[3]);
-  const handoffText = fs.readFileSync(created.path, "utf8");
-
-  assert.equal(created.inbox_id, chat.id);
-  assert.equal(created.status, "pending");
-  assert.match(handoffText, /handoff this/);
-  assert.match(handoffText, /Do not call tools/);
-  assert.equal(pending.pending, 1);
-  assert.equal(pending.latest_handoff_id, created.id);
-  assert.equal(pending.latest_pending_handoff_id, created.id);
-  assert.equal(completed.handoff.id, created.id);
-  assert.equal(completed.reply.inbox_id, chat.id);
-  assert.equal(completed.reply.text, "handoff reply");
-  assert.equal(finalStatus.pending, 0);
-  assert.equal(finalStatus.completed, 1);
-  assert.equal(finalStatus.latest_completed_handoff_id, created.id);
-});
-
-test("agent CLI creates handoffs for the latest inbox entry and prevents double completion", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-handoff-latest-");
-  const replyFile = path.join(agentHome, "reply.txt");
-  setAllowlistedConfig(agentHome, "user-chat");
-  enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "111",
-    text: "older",
-  });
-  const latest = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "latest handoff",
-  });
-  fs.writeFileSync(replyFile, "done once\n");
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["handoff-latest", "--state", agentHome]);
-    const handoff = JSON.parse(lines[0]).handoff;
-    await runAgentCli(["handoff-complete", "--state", agentHome, "--id", handoff.id, "--from-file", replyFile]);
-    await assert.rejects(
-      () => runAgentCli(["handoff-complete", "--state", agentHome, "--id", handoff.id, "--from-file", replyFile]),
-      /Handoff is not pending/,
-    );
-  } finally {
-    console.log = originalLog;
-  }
-
-  const handoff = JSON.parse(lines[0]).handoff;
-  const completed = JSON.parse(lines[1]);
-
-  assert.equal(handoff.inbox_id, latest.id);
-  assert.equal(completed.reply.chat_id, "222");
-  assert.equal(readJsonl(agentPaths(agentHome).chatReplies).filter((entry) => entry.status === "queued").length, 1);
-});
-
-test("agent handoff complete rejects secret replies and remains pending", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-handoff-secret-");
-  const replyFile = path.join(agentHome, "secret-reply.txt");
-  setAllowlistedConfig(agentHome, "user-chat");
-  enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "secret handoff",
-  });
-  fs.writeFileSync(replyFile, "token = sk-123456789012345678901234567890\n");
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["handoff-latest", "--state", agentHome]);
-    const handoff = JSON.parse(lines[0]).handoff;
-    await assert.rejects(
-      () => runAgentCli(["handoff-complete", "--state", agentHome, "--id", handoff.id, "--from-file", replyFile]),
-      /Reply may contain a secret/,
-    );
-    await runAgentCli(["handoff-status", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const status = JSON.parse(lines[1]);
-
-  assert.equal(status.pending, 1);
-  assert.equal(status.completed, 0);
-  assert.equal(readJsonl(agentPaths(agentHome).chatReplies).length, 0);
-});
-
-test("agent handoff status folds one pending and one completed handoff", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-handoff-status-");
-  const replyFile = path.join(agentHome, "reply.txt");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const firstChat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "111",
-    text: "complete me",
-  });
-  const latestChat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "leave pending",
-  });
-  fs.writeFileSync(replyFile, "completed reply\n");
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["handoff", "--state", agentHome, "--id", firstChat.id]);
-    const first = JSON.parse(lines.at(-1)).handoff;
-    await runAgentCli(["handoff-latest", "--state", agentHome]);
-    await runAgentCli(["handoff-complete", "--state", agentHome, "--id", first.id, "--from-file", replyFile]);
-    await runAgentCli(["handoff-status", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const status = JSON.parse(lines.at(-1));
-
-  assert.equal(status.pending, 1);
-  assert.equal(status.completed, 1);
-  assert.equal(status.handoffs.find((handoff) => handoff.status === "pending").inbox_id, latestChat.id);
-  assert.ok(status.latest_handoff_id);
-});
-
-test("agent CLI completes the latest pending handoff", async () => {
-  const agentHome = makeAgentHome("codex-agent-cli-handoff-complete-latest-");
-  const replyFile = path.join(agentHome, "reply.txt");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const first = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "111",
-    text: "first pending",
-  });
-  const second = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "second pending",
-  });
-  fs.writeFileSync(replyFile, "latest pending reply\n");
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["handoff", "--state", agentHome, "--id", first.id]);
-    await runAgentCli(["handoff", "--state", agentHome, "--id", second.id]);
-    await runAgentCli(["handoff-complete-latest", "--state", agentHome, "--from-file", replyFile]);
-    await runAgentCli(["handoff-status", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const firstHandoff = JSON.parse(lines[0]).handoff;
-  const secondHandoff = JSON.parse(lines[1]).handoff;
-  const completed = JSON.parse(lines[2]);
-  const status = JSON.parse(lines[3]);
-
-  assert.equal(completed.handoff.id, secondHandoff.id);
-  assert.equal(completed.reply.chat_id, "222");
-  assert.equal(status.pending, 1);
-  assert.equal(status.completed, 1);
-  assert.equal(status.latest_pending_handoff_id, firstHandoff.id);
-});
-
-test("agent CLI reports when no pending handoff exists", async () => {
-  await assert.rejects(
-    () => runAgentCli(["handoff-complete-latest", "--state", makeAgentHome("codex-agent-cli-no-pending-handoff-"), "--text", "reply"]),
-    /No pending handoff/,
-  );
-});
-
-test("agent CLI prunes old raw chat stores without dropping queued replies", async () => {
-  const agentHome = makeAgentHome("codex-agent-chat-prune-");
-  const oldDate = "2026-01-01T00:00:00.000Z";
-  setAllowlistedConfig(agentHome, "user-chat");
-  const oldChat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "111",
-    text: "old raw text",
-  });
-  const newChat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: "user-chat",
-    chatId: "222",
-    text: "new raw text",
-  });
-  writeJsonl(agentPaths(agentHome).chatInbox, readJsonl(agentPaths(agentHome).chatInbox).map((entry) => (
-    entry.id === oldChat.id ? { ...entry, created_at: oldDate } : entry
-  )));
-  const oldDraft = createChatDraft({ agentHome, inboxId: oldChat.id });
-  const newDraft = createChatDraft({ agentHome, inboxId: newChat.id });
-  const oldHandoff = createChatHandoff({ agentHome, inboxId: oldChat.id });
-  const newHandoff = createChatHandoff({ agentHome, inboxId: newChat.id });
-  writeJsonl(agentPaths(agentHome).handoffs, readJsonl(agentPaths(agentHome).handoffs).map((entry) => (
-    entry.id === oldHandoff.id ? { ...entry, created_at: oldDate } : entry
-  )));
-  const oldReply = queueChatReply({ agentHome, inboxId: oldChat.id, text: "old reply" });
-  const newReply = queueChatReply({ agentHome, inboxId: newChat.id, text: "new reply" });
-  const oldQueuedReply = queueChatReply({ agentHome, inboxId: oldChat.id, text: "old queued reply" });
-  markReplySentForTest(agentHome, oldReply.id);
-  writeJsonl(agentPaths(agentHome).chatReplies, readJsonl(agentPaths(agentHome).chatReplies).map((entry) => (
-    (entry.id === oldReply.id || entry.id === oldQueuedReply.id) && entry.created_at ? { ...entry, created_at: oldDate } : entry
-  )));
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["chat-prune", "--state", agentHome, "--days", "30"]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const result = JSON.parse(lines[0]);
-  const inbox = readJsonl(agentPaths(agentHome).chatInbox);
-  const replies = readJsonl(agentPaths(agentHome).chatReplies);
-  const handoffs = readJsonl(agentPaths(agentHome).handoffs);
-
-  assert.equal(result.pruned_inbox, 1);
-  assert.equal(result.pruned_drafts, 1);
-  assert.equal(result.pruned_handoff_files, 1);
-  assert.equal(result.expired_handoffs, 1);
-  assert.equal(result.pruned_sent_replies, 1);
-  assert.deepEqual(inbox.map((entry) => entry.id), [newChat.id]);
-  assert.equal(fs.existsSync(oldDraft.path), false);
-  assert.equal(fs.existsSync(newDraft.path), true);
-  assert.equal(fs.existsSync(oldHandoff.path), false);
-  assert.equal(fs.existsSync(newHandoff.path), true);
-  assert.equal(replies.some((entry) => entry.id === oldReply.id), false);
-  assert.equal(replies.some((entry) => entry.id === newReply.id), true);
-  assert.equal(replies.some((entry) => entry.id === oldQueuedReply.id && entry.status === "queued"), true);
-  assert.equal(handoffs.some((entry) => entry.id === oldHandoff.id && entry.status === "expired"), true);
-});
-
 test("agent CLI exchanges messages through claim and reply ledgers", async () => {
   const agentHome = makeAgentHome("codex-agent-exchange-");
   const lines = [];
@@ -1545,13 +1058,6 @@ test("Telegram bot tokens are scanned, redacted, and blocked from outbound repli
   assert.equal(scanSecrets(text)[0].type, "telegram_bot_token");
   assert.equal(redactSecrets(text).includes("[redacted:telegram_bot_token]"), true);
   assert.equal(JSON.stringify(readJsonl(agentPaths(agentHome).exchangeMessages)).includes(token), false);
-
-  setAllowlistedConfig(agentHome, "user-chat");
-  const inbox = enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "222", text: "reply" });
-  assert.throws(
-    () => queueChatReply({ agentHome, inboxId: inbox.id, text }),
-    /Reply may contain a secret/,
-  );
 });
 
 test("agent CLI exchange from-file submit is accepted and persisted redacted", async () => {
@@ -1749,105 +1255,6 @@ test("agent CLI controls local kill switch and token budget", async () => {
   assert.equal(resumed.config.kill_switch, false);
   assert.equal(status.safety.config.daily_token_budget, Number.MAX_SAFE_INTEGER);
 });
-
-test("codex-reply-once still uses the manual draft prompt", async () => {
-  const agentHome = makeAgentHome("codex-agent-reply-once-manual-prompt-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "456", text: "你好" });
-  let seenPrompt = "";
-
-  await codexReplyOnce({
-    agentHome,
-    runner: async ({ prompt }) => { seenPrompt = prompt; return "drafted reply"; },
-  });
-
-  assert.match(seenPrompt, /drafting a conservative manual reply/);
-  assert.doesNotMatch(seenPrompt, /replying directly to a Telegram user/);
-});
-
-test("codex-reply-once queues a fake-runner reply for the latest inbox entry", async () => {
-  const agentHome = makeAgentHome("codex-agent-reply-once-latest-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "111", text: "older message" });
-  const latest = enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "222", text: "reply to me" });
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["codex-reply-once", "--state", agentHome]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const result = JSON.parse(lines[0]);
-  const replies = readJsonl(agentPaths(agentHome).chatReplies);
-
-  assert.equal(result.inbox_id, latest.id);
-  assert.equal(result.queued, true);
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].id, result.reply_id);
-  assert.equal(replies[0].inbox_id, latest.id);
-  assert.equal(replies[0].chat_id, "222");
-  assert.equal(replies[0].status, "queued");
-  assert.match(replies[0].text, /fake runner/i);
-});
-
-test("codex-reply-once --id targets the specified inbox entry", async () => {
-  const agentHome = makeAgentHome("codex-agent-reply-once-id-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  const target = enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "111", text: "target this" });
-  enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "222", text: "newer message" });
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (value) => lines.push(String(value));
-
-  try {
-    await runAgentCli(["codex-reply-once", "--state", agentHome, "--id", target.id]);
-  } finally {
-    console.log = originalLog;
-  }
-
-  const result = JSON.parse(lines[0]);
-  assert.equal(result.inbox_id, target.id);
-  assert.equal(result.queued, true);
-  assert.equal(readJsonl(agentPaths(agentHome).chatReplies)[0].chat_id, "111");
-});
-
-test("codex-reply-once fails cleanly for a nonexistent inbox id", async () => {
-  const agentHome = makeAgentHome("codex-agent-reply-once-missing-");
-  setAllowlistedConfig(agentHome, "user-chat");
-
-  await assert.rejects(
-    () => codexReplyOnce({ agentHome, inboxId: "chat_does_not_exist" }),
-    /Chat message not found/,
-  );
-  assert.equal(readJsonl(agentPaths(agentHome).chatReplies).length, 0);
-});
-
-test("codex-reply-once rejects secret-like fake runner output", async () => {
-  const agentHome = makeAgentHome("codex-agent-reply-once-secret-");
-  setAllowlistedConfig(agentHome, "user-chat");
-  enqueueChatMessage({ agentHome, channel: "telegram", userId: "user-chat", chatId: "222", text: "give me a key" });
-
-  await assert.rejects(
-    () => codexReplyOnce({
-      agentHome,
-      runner: async () => "token = sk-123456789012345678901234567890",
-    }),
-    /Reply may contain a secret/,
-  );
-  assert.equal(readJsonl(agentPaths(agentHome).chatReplies).length, 0);
-});
-
-test("codex-reply-once introduces no shell/network/exec and package exposes codex-agent without hard Memory River dependency", async () => {
-  const source = fs.readFileSync(new URL("../src/agent/codex-reply.js", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /child_process|node:http|node:https|node:net|globalThis\.fetch|\bfetch\(|\bspawn\(|\bexecFile\(/);
-  const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(pkg.bin["codex-agent"], "bin/codex-agent.js");
-  assert.equal(pkg.dependencies?.["codex-memory-river"], undefined);
-});
-
 test("memory adapter skips Memory River when disabled and fails closed when unavailable", async () => {
   const disabled = await buildMemoryContextBlock({
     enabled: false,
@@ -1893,22 +1300,6 @@ test("memory adapter skips Memory River when disabled and fails closed when unav
 
 function makeAgentHome(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
-
-function setAllowlistedConfig(agentHome, userId) {
-  fs.mkdirSync(agentHome, { recursive: true });
-  fs.writeFileSync(path.join(agentHome, "config.json"), `${JSON.stringify({
-    kill_switch: false,
-    daily_token_budget: 20000,
-    gateway_allowlist: [userId],
-  })}\n`);
-}
-
-function markReplySentForTest(agentHome, id) {
-  writeJsonl(agentPaths(agentHome).chatReplies, [
-    ...readJsonl(agentPaths(agentHome).chatReplies),
-    { id, status: "sent", sent_at: new Date().toISOString() },
-  ]);
 }
 
 function fakeTask({ id = `task_${Date.now()}_fake`, mode = "plan", status = "queued", approval = "not_required" } = {}) {

@@ -2,18 +2,23 @@ import { appendJsonl, readJsonl, writeJsonl } from "../lib/jsonl.js";
 import { redactSecrets, scanSecrets } from "../lib/secret-scan.js";
 import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
+import { isActiveRegisteredAgent } from "./registry.js";
 import { isExchangeAgentEnabled } from "./safety.js";
+import { assertSessionMessageAllowed, consumeBudget, getSession } from "./sessions.js";
 
 const VALID_TARGET = /^[a-z][a-z0-9_-]*$|^any$/;
 const DEFAULT_LEASE_SECONDS = 3600;
 
-export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, dispatch = null }) {
+export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, dispatch = null, sessionId = null, repo = null }) {
   const sender = requireName(from, "from");
   const target = requireName(to, "to");
   const body = String(text || "");
   if (!body.trim()) {
     throw new Error("Exchange message text is empty");
   }
+  const session = sessionId
+    ? assertSessionMessageAllowed({ agentHome, sessionId, from: sender, to: target })
+    : null;
   // Redact (not reject) secret-like content so legitimate code-review requests
   // are not blocked. Only the redacted text is persisted — raw secret text never
   // reaches the message record (id hash, text, or text_hash).
@@ -28,11 +33,85 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     chat_id: chatId ? String(chatId) : null,
     text: redacted,
     text_hash: shortHash(redacted),
+    ...(session ? { session_id: session.session_id } : {}),
+    ...(repo || session?.repo ? { repo: String(repo || session.repo) } : {}),
     ...(dispatch ? { dispatch } : {}),
     created_at: now,
   };
   appendJsonl(agentPaths(agentHome).exchangeMessages, message);
+  if (session && shouldConsumeSessionSubmitBudget({ from: sender, channel: message.channel })) {
+    consumeBudget({
+      agentHome,
+      id: session.session_id,
+      messageId: message.id,
+      kind: "exchange_message",
+      from: sender,
+      to: target,
+      now: Date.parse(now),
+    });
+  }
   return message;
+}
+
+function shouldConsumeSessionSubmitBudget({ from, channel }) {
+  return String(from || "") !== "owner" && String(channel || "") !== "session-relay";
+}
+
+export function kickoffSession({ agentHome, session, channel = "session", threadId = null, chatId = null } = {}) {
+  const sessionId = session?.session_id;
+  const targets = Array.isArray(session?.participants) ? session.participants : [];
+  const messages = [];
+  for (const target of targets) {
+    messages.push(submitExchangeMessage({
+      agentHome,
+      from: "owner",
+      to: target,
+      channel,
+      threadId,
+      chatId,
+      sessionId,
+      text: session.topic,
+    }));
+  }
+  return {
+    sent: messages.length,
+    messages,
+    session: getSession(agentHome, sessionId),
+  };
+}
+
+export function relaySessionReply({ agentHome, message, reply, channel = "session-relay" } = {}) {
+  if (!message?.session_id || !reply?.id) {
+    return { relayed: false, reason: "no_session" };
+  }
+  const session = getSession(agentHome, message.session_id);
+  if (!session || session.state !== "active") {
+    return { relayed: false, reason: session?.closed_reason === "exhausted" ? "budget_exhausted" : "session_not_active" };
+  }
+  if (session.messages_used >= session.budget.max_messages) {
+    return { relayed: false, reason: "budget_exhausted" };
+  }
+  const from = String(reply.agent_id || "");
+  const to = nextRelayParticipant(session, from);
+  if (!to) {
+    return { relayed: false, reason: "no_relay_target" };
+  }
+  try {
+    const relayed = submitExchangeMessage({
+      agentHome,
+      from,
+      to,
+      channel,
+      threadId: message.thread_id || null,
+      chatId: message.chat_id || null,
+      sessionId: session.session_id,
+      repo: message.repo || session.repo || null,
+      text: reply.text,
+    });
+    return { relayed: true, message: relayed };
+  } catch (error) {
+    return { relayed: false, reason: error?.code || "relay_failed" };
+  }
 }
 
 export function listExchangeInbox(agentHome, { agent } = {}) {
@@ -100,12 +179,16 @@ export function replyExchangeMessage({ agentHome, id, agent, text }) {
   if (scanSecrets(body).length > 0) {
     throw new Error("Exchange reply may contain a secret");
   }
+  const session = message.session_id
+    ? assertSessionMessageAllowed({ agentHome, sessionId: message.session_id, from: agentId, to: message.from })
+    : null;
   const reply = {
     id: `xreply_${Date.now()}_${shortHash(`${id}:${agentId}:${body}`)}`,
     message_id: id,
     agent_id: agentId,
     text: body,
     text_hash: shortHash(body),
+    ...(session ? { session_id: session.session_id } : {}),
     created_at: new Date().toISOString(),
   };
   appendJsonl(agentPaths(agentHome).exchangeReplies, reply);
@@ -116,6 +199,17 @@ export function replyExchangeMessage({ agentHome, id, agent, text }) {
     reply_id: reply.id,
     completed_at: new Date().toISOString(),
   });
+  if (session) {
+    consumeBudget({
+      agentHome,
+      id: session.session_id,
+      messageId: reply.id,
+      kind: "exchange_reply",
+      from: agentId,
+      to: message.from,
+      now: Date.parse(reply.created_at),
+    });
+  }
   return { message, reply };
 }
 
@@ -220,6 +314,25 @@ function formatExchangeReply(message, reply) {
   };
 }
 
+function nextRelayParticipant(session, from) {
+  const participants = Array.isArray(session?.participants) ? session.participants.map(String).sort() : [];
+  const candidates = participants.filter((name) => name !== from);
+  if (candidates.length === 0) {
+    return null;
+  }
+  const currentIndex = participants.indexOf(from);
+  if (currentIndex === -1) {
+    return candidates[0];
+  }
+  for (let offset = 1; offset <= participants.length; offset += 1) {
+    const candidate = participants[(currentIndex + offset) % participants.length];
+    if (candidate !== from) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function latestExchangeClaims(agentHome) {
   const latest = new Map();
   for (const entry of readJsonl(agentPaths(agentHome).exchangeClaims)) {
@@ -275,7 +388,7 @@ function normalizeLeaseSeconds(value) {
 
 function requireEnabledAgent(agentHome, agent) {
   const agentId = requireName(agent, "agent");
-  if (!isExchangeAgentEnabled(agentHome, agentId)) {
+  if (!isExchangeAgentEnabled(agentHome, agentId) && !isActiveRegisteredAgent(agentHome, agentId)) {
     throw new Error(`Exchange agent is not enabled: ${agentId}`);
   }
   return agentId;

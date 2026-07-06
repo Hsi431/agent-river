@@ -392,71 +392,6 @@ test("gateway @opus ask still succeeds when the runner trigger throws", async ()
   assert.equal(result.runner_triggered, false);
   assert.equal(readJsonl(agentPaths(agentHome).exchangeMessages).length, 1);
 });
-
-test("owner @opus dangerous request is declined, no task, no submit", async () => {
-  const agentHome = makeAgentHome("codex-agent-gateway-opus-dangerous-");
-  allowGatewayUser(agentHome, "123");
-  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
-  makeOwner(agentHome, "123", "/repo/x");
-
-  const result = await handleGatewayMessage({ agentHome, userId: "123", text: "@opus push to main", runnerTrigger: () => {} });
-
-  assert.match(result.reply, /本機手動執行/);
-  assert.equal(listTasks(agentHome).length, 0);
-  assert.equal(fs.existsSync(agentPaths(agentHome).exchangeMessages), false);
-});
-
-test("owner @opus edit request (broad) creates a pending opus edit task with buttons, does not run", async () => {
-  const agentHome = makeAgentHome("codex-agent-gateway-opus-edit-approve-");
-  allowGatewayUser(agentHome, "123");
-  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
-  makeOwner(agentHome, "123", "/repo/x");
-  let ran = false;
-
-  const result = await handleGatewayMessage({
-    agentHome, userId: "123", text: "@opus 幫我重構整個 exchange 模組",
-    runner: async () => { ran = true; return { text: "x", exit: 0, tokens: 1 }; },
-    runnerTrigger: () => {},
-  });
-  const tasks = listTasks(agentHome);
-
-  assert.equal(ran, false);
-  assert.equal(tasks.length, 1);
-  assert.equal(tasks[0].mode, "edit");
-  assert.equal(tasks[0].executor, "opus");
-  assert.equal(tasks[0].approval, "pending");
-  assert.match(result.reply, /待批准 edit 任務/);
-  assert.deepEqual(result.reply_markup.inline_keyboard[0].map((b) => b.callback_data), [
-    `owner:approve:${tasks[0].id}`,
-    `owner:reject:${tasks[0].id}`,
-    `owner:status:${tasks[0].id}`,
-  ]);
-});
-
-test("owner @opus low-risk edit auto-approves, runs opus executor, reports", async () => {
-  const agentHome = makeAgentHome("codex-agent-gateway-opus-edit-auto-");
-  allowGatewayUser(agentHome, "123");
-  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
-  makeOwner(agentHome, "123", "/repo/x");
-  const execCalls = [];
-
-  const result = await handleGatewayMessage({
-    agentHome, userId: "123", text: "@opus fix the typo in utils.js",
-    runner: async () => ({ text: "Fixed the typo.", sessionPath: null, exit: 0, tokens: 4 }),
-    execFileImpl: stubEditExec({ diffNumstat: "1\t1\tutils.js\n", calls: execCalls }),
-    runnerTrigger: () => {},
-  });
-  const task = listTasks(agentHome)[0];
-
-  assert.equal(task.mode, "edit");
-  assert.equal(task.executor, "opus");
-  assert.equal(task.approval, "approved");
-  assert.equal(task.status, "done");
-  assert.equal(task.result.summary, "Fixed the typo.");
-  assert.match(result.reply, /已核准並完成 edit 任務/);
-  assert.match(result.reply, /utils\.js/);
-});
-
 test("@opus ack tells the truth when the runner is not ready (no false promise)", async () => {
   const agentHome = makeAgentHome("codex-agent-gateway-opus-not-ready-");
   allowGatewayUser(agentHome, "user-allowed");
@@ -1292,9 +1227,7 @@ function makeAgentHome(prefix) {
 
 function makeOwner(agentHome, userId, repo) {
   setTelegramCodexPolicy(agentHome, {
-    direct_send_enabled: true,
     direct_send_user_add: userId,
-    owner_mode_enabled: true,
     default_repo: repo,
   });
 }

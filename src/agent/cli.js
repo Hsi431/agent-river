@@ -1,26 +1,9 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseArgs, requireArg, validateValueOptions } from "../lib/args.js";
-import { resolveStateHome } from "../lib/paths.js";
-import {
-  chatStatus,
-  completeChatHandoff,
-  completeLatestChatHandoff,
-  createChatDraft,
-  createChatHandoff,
-  createLatestChatDraft,
-  createLatestChatHandoff,
-  handoffStatus,
-  inboxSummary,
-  pruneChatState,
-  queueChatReply,
-  queueLatestChatReply,
-} from "./chat.js";
-import { runBridgeOnce } from "./bridge.js";
-import { codexReplyOnce } from "./codex-reply.js";
-import { telegramCodexLoop, telegramCodexLoopDryRun, telegramCodexOnce } from "./telegram-codex.js";
-import { telegramCodexBridge, telegramCodexBridgeStatus } from "./telegram-codex-bridge.js";
-import { approveAndSendReply, approveReply, listPendingReplyApprovals, rejectReply } from "./reply-approval.js";
-import { buildTelegramCodexService, telegramCodexServiceStatus, writeTelegramCodexService, buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings } from "./service.js";
+import { expandHome, resolveStateHome } from "../lib/paths.js";
+import { buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus, buildExecRunnerService, writeExecRunnerService, execRunnerServiceStatus, buildDashboardService, writeDashboardService, dashboardServiceStatus } from "./service.js";
 import {
   claimExchangeMessage,
   exchangeStatus,
@@ -31,14 +14,20 @@ import {
   releaseExchangeClaim,
   replyExchangeMessage,
   submitExchangeMessage,
+  kickoffSession,
 } from "./exchange.js";
 import { runExchangeRunnerOnce, defaultRunnerSettingsPath, runnerSessionStatus } from "./exchange-runner.js";
+import { runCodexExchangeRunnerOnce } from "./codex-exchange-runner.js";
+import { runExecRunnerOnce } from "./exec-runner.js";
+import { getSession, killSession, listActiveSessions, openSession } from "./sessions.js";
+import { getRegisteredAgent, isActivePollAgent, joinAgentRegistry, listRegisteredAgents, seedSpawnAgents, verifyAgentToken } from "./registry.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "./orchestrator.js";
 import { resolveAgentHome } from "./paths.js";
 import { allowGatewayUser, denyGatewayUser, disableExchangeAgent, enableExchangeAgent, getSafetyStatus, getTelegramCodexPolicy, setDailyTokenBudget, setKillSwitch, setTelegramCodexPolicy } from "./safety.js";
 import { handleTelegramUpdate, parseTelegramUpdateJson, pollTelegramOnce } from "./telegram.js";
 import { getDispatchApproval, listDispatchApprovals } from "./dispatch.js";
+import { dashboardBridge, dashboardOnce } from "./dashboard/bot.js";
 
 export async function runAgentCli(argv) {
   if (argv[0] === "--help" || argv[0] === "-h") {
@@ -47,10 +36,20 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "channel", "chat-id", "context-max-chars", "days", "default-repo", "dir", "direct-send-allow-action-claims", "direct-send-daily-max", "direct-send-enabled", "direct-send-max-chars", "direct-send-memory", "direct-send-min-remaining-tokens", "direct-send-trusted-qa-enabled", "direct-send-trusted-qa-max-chars", "direct-send-user", "direct-send-user-remove", "enabled", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "global-interval-seconds", "history-messages", "id", "interval-seconds", "iterations", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-model-calls-per-run", "max-runtime-seconds", "memory-enabled", "memory-state", "mode", "owner-low-risk-auto-plan-enabled", "owner-mode-enabled", "per-chat-interval-seconds", "repo", "request", "require-approval", "settings", "sleep-seconds", "state", "text", "thread", "to", "tokens", "transport", "update-json", "user"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  if (args.help) {
+    return printHelp();
+  }
   const agentHome = resolveAgentHome(args.state, { create: command !== "status" });
 
   switch (command) {
+    case "init":
+      return printResult(initAgentRiver({
+        agentHome,
+        workspaceRoot: args["workspace-root"],
+        systemdDir: args["systemd-dir"],
+        repoDir: process.cwd(),
+      }));
     case "submit":
       return printResult({
         task: submitAgentTask({
@@ -73,13 +72,8 @@ export async function runAgentCli(argv) {
       return printResult({ task: approveAgentTask({ agentHome, id: requireTaskId(args) }) });
     case "reject":
       return printResult({ task: rejectAgentTask({ agentHome, id: requireTaskId(args) }) });
-    case "inbox":
-      return printResult(inboxSummary(agentHome));
-    case "chat-status":
-      return printResult(chatStatus(agentHome));
-    case "chat-prune":
-      return printResult(pruneChatState({ agentHome, days: requireArg(args, "days") }));
     case "exchange-submit":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "from"), tokenFile: args["token-file"] });
       return printResult({
         message: submitExchangeMessage({
           agentHome,
@@ -87,16 +81,49 @@ export async function runAgentCli(argv) {
           to: args.to || "any",
           channel: args.channel || "cli",
           threadId: args.thread,
+          sessionId: args.session || null,
           text: resolveReplyText(args),
         }),
       });
+    case "session-open":
+      requireSessionInitiatorTokenIfNeeded({ agentHome, initiator: requireArg(args, "initiator"), tokenFile: args["token-file"] });
+      {
+        const initiator = requireArg(args, "initiator");
+        const session = await openSession({
+          agentHome,
+          initiator,
+          participants: requireArg(args, "participants"),
+          repo: args.repo || null,
+          budgetMessages: args["budget-messages"],
+          budgetMinutes: args["budget-minutes"],
+          writeAccess: args["write-access"],
+          topic: requireArg(args, "topic"),
+        });
+        const kickoff = initiator === "owner" && !args["no-kickoff"]
+          ? kickoffSession({ agentHome, session })
+          : null;
+        return printResult({
+          session: kickoff?.session || session,
+          kickoff: kickoff ? { sent: kickoff.sent } : null,
+        });
+      }
+    case "session-list":
+      return printResult({ sessions: listActiveSessions(agentHome) });
+    case "session-show":
+      return printResult({ session: requireSession(agentHome, requireArg(args, "id")) });
+    case "session-kill":
+      return printResult({ session: killSession({ agentHome, id: requireArg(args, "id") }) });
     case "exchange-inbox":
+      if (args.agent) {
+        requirePollAgentTokenIfNeeded({ agentHome, name: args.agent, tokenFile: args["token-file"] });
+      }
       return printResult({ messages: listExchangeInbox(agentHome, { agent: args.agent }) });
     case "exchange-replies":
       return printResult({ replies: listExchangeReplies(agentHome, { agent: requireArg(args, "agent"), threadId: args.thread }) });
     case "exchange-thread":
       return printResult(getExchangeThread(agentHome, requireArg(args, "id")));
     case "exchange-claim":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "agent"), tokenFile: args["token-file"] });
       return printResult({
         message: claimExchangeMessage({
           agentHome,
@@ -106,12 +133,14 @@ export async function runAgentCli(argv) {
         }),
       });
     case "exchange-release":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "agent"), tokenFile: args["token-file"] });
       return printResult(releaseExchangeClaim({
         agentHome,
         id: requireArg(args, "id"),
         agent: requireArg(args, "agent"),
       }));
     case "exchange-reply":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "agent"), tokenFile: args["token-file"] });
       return printResult(replyExchangeMessage({
         agentHome,
         id: requireArg(args, "id"),
@@ -128,8 +157,14 @@ export async function runAgentCli(argv) {
       return printResult({ dispatch: getDispatchApproval(agentHome, requireArg(args, "id")) });
     case "exchange-runner": {
       const runnerAgent = args.agent || "opus";
+      if (runnerAgent === "codex") {
+        return printResult(await runCodexExchangeRunnerOnce({
+          agentHome,
+          repoDir: args.repo || process.cwd(),
+        }));
+      }
       if (runnerAgent !== "opus") {
-        throw new Error("exchange-runner v1 only supports --agent opus");
+        throw new Error(`exchange-runner: unknown agent "${runnerAgent}". Supported: opus, codex`);
       }
       return printResult(await runExchangeRunnerOnce({
         agentHome,
@@ -139,42 +174,11 @@ export async function runAgentCli(argv) {
     }
     case "exchange-runner-session-status":
       return printResult({ sessions: runnerSessionStatus(agentHome, { chatId: args["chat-id"] }) });
-    case "draft":
-      return printResult({ draft: createChatDraft({ agentHome, inboxId: requireArg(args, "id") }) });
-    case "draft-latest":
-      return printResult({ draft: createLatestChatDraft(agentHome) });
-    case "handoff":
-      return printResult({ handoff: createChatHandoff({ agentHome, inboxId: requireArg(args, "id") }) });
-    case "handoff-latest":
-      return printResult({ handoff: createLatestChatHandoff(agentHome) });
-    case "handoff-status":
-      return printResult(handoffStatus(agentHome));
-    case "handoff-complete":
-      return printResult(completeChatHandoff({
+    case "exec-runner-once":
+      return printResult(await runExecRunnerOnce({
         agentHome,
-        id: requireArg(args, "id"),
-        text: resolveReplyText(args),
+        repoDir: args.repo || process.cwd(),
       }));
-    case "handoff-complete-latest":
-      return printResult(completeLatestChatHandoff({
-        agentHome,
-        text: resolveReplyText(args),
-      }));
-    case "reply":
-      return printResult({
-        reply: queueChatReply({
-          agentHome,
-          inboxId: requireArg(args, "id"),
-          text: resolveReplyText(args),
-        }),
-      });
-    case "reply-latest":
-      return printResult({
-        reply: queueLatestChatReply({
-          agentHome,
-          text: resolveReplyText(args),
-        }),
-      });
     case "pause":
       return printResult({ config: setKillSwitch(agentHome, true) });
     case "resume":
@@ -189,6 +193,22 @@ export async function runAgentCli(argv) {
       return printResult({ config: enableExchangeAgent(agentHome, { agentId: requireArg(args, "agent"), kind: args.kind || "manual" }) });
     case "agent-disable":
       return printResult({ config: disableExchangeAgent(agentHome, requireArg(args, "agent")) });
+    case "agent-join":
+      return printResult({
+        agent: joinAgentRegistry({
+          agentHome,
+          name: requireArg(args, "name"),
+          style: requireArg(args, "style"),
+          capabilities: args.capabilities,
+          execCommand: args.exec,
+          execTimeoutSeconds: args["exec-timeout-seconds"],
+          execCwd: args["exec-cwd"],
+        }),
+      });
+    case "agent-registry-list":
+      return printResult({ agents: listRegisteredAgents(agentHome) });
+    case "registry-seed":
+      return printResult(seedSpawnAgents({ agentHome }));
     case "gateway":
       return printResult(await handleGatewayMessage({
         agentHome,
@@ -214,71 +234,26 @@ export async function runAgentCli(argv) {
           ? await resolveStateHome(args["memory-state"], { create: false })
           : undefined,
       }));
-    case "bridge-once":
-      return printResult(await runBridgeOnce({
-        agentHome,
-        transport: args.transport || "fetch",
-        memoryStateHome: args["memory-state"]
-          ? await resolveStateHome(args["memory-state"], { create: false })
-          : undefined,
-      }));
-    case "codex-reply-once":
-      return printResult(await codexReplyOnce({ agentHome, inboxId: args.id }));
-    case "telegram-codex-once":
-      return printResult(await telegramCodexOnce({
-        agentHome,
-        transport: args.transport || "fetch",
-        allowRealCodex: Boolean(args["allow-real-codex"]),
-        requireReplyApproval: Boolean(args["require-reply-approval"]),
-        inboxId: args.id,
-        memoryStateHome: args["memory-state"]
-          ? await resolveStateHome(args["memory-state"], { create: false })
-          : undefined,
-      }));
-    case "reply-approval-list":
-      return printResult({ approvals: listPendingReplyApprovals(agentHome) });
-    case "reply-approval-approve":
-      return printResult(approveReply({ agentHome, id: requireArg(args, "id") }));
-    case "reply-approval-reject":
-      return printResult(rejectReply({ agentHome, id: requireArg(args, "id") }));
     case "telegram-codex-policy":
       return printResult({ policy: getTelegramCodexPolicy(agentHome), safety: getSafetyStatus(agentHome) });
     case "telegram-codex-policy-set":
       return printResult({
         policy: setTelegramCodexPolicy(agentHome, {
-          enabled: args.enabled,
-          require_approval: args["require-approval"],
-          global_interval_seconds: args["global-interval-seconds"],
-          per_chat_interval_seconds: args["per-chat-interval-seconds"],
-          max_model_calls_per_run: args["max-model-calls-per-run"],
           default_repo: args["default-repo"],
-          history_messages: args["history-messages"],
-          context_max_chars: args["context-max-chars"],
           memory_enabled: args["memory-enabled"],
-          direct_send_enabled: args["direct-send-enabled"],
-          direct_send_max_chars: args["direct-send-max-chars"],
-          direct_send_daily_max: args["direct-send-daily-max"],
-          direct_send_min_remaining_tokens: args["direct-send-min-remaining-tokens"],
-          direct_send_trusted_qa_enabled: args["direct-send-trusted-qa-enabled"],
-          direct_send_trusted_qa_max_chars: args["direct-send-trusted-qa-max-chars"],
-          owner_mode_enabled: args["owner-mode-enabled"],
-          owner_low_risk_auto_plan_enabled: args["owner-low-risk-auto-plan-enabled"],
           exchange_notify_enabled: args["exchange-notify-enabled"],
           exchange_notify_chat_id: args["exchange-notify-chat-id"],
           exchange_notify_max_per_cycle: args["exchange-notify-max-per-cycle"],
           exchange_runner_enabled: args["exchange-runner-enabled"],
           exchange_runner_model: args["exchange-runner-model"],
+          codex_runner_model: args["codex-runner-model"],
           exchange_runner_max_attempts: args["exchange-runner-max-attempts"],
           exchange_runner_timeout_seconds: args["exchange-runner-timeout-seconds"],
           exchange_runner_daily_max: args["exchange-runner-daily-max"],
-          direct_send_memory: args["direct-send-memory"],
-          direct_send_allow_action_claims: args["direct-send-allow-action-claims"],
-          direct_send_user_add: args["direct-send-user"],
-          direct_send_user_remove: args["direct-send-user-remove"],
+          v2_enabled: args["v2-enabled"],
+          workspace_root: args["workspace-root"],
         }).telegram_codex_policy,
       });
-    case "telegram-codex-loop-dry-run":
-      return printResult(telegramCodexLoopDryRun({ agentHome }));
     case "exchange-runner-service-print":
       return printResult(buildOpusRunnerService({ repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
     case "exchange-runner-service-write":
@@ -290,6 +265,18 @@ export async function runAgentCli(argv) {
         intervalSeconds: args["interval-seconds"],
         settingsPath: args.settings,
       }));
+    case "codex-runner-service-print":
+      return printResult(buildCodexRunnerService({ repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "codex-runner-service-write":
+      return printResult(writeCodexRunnerService({ dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "codex-runner-service-status":
+      return printResult(codexRunnerServiceStatus({ dir: args.dir, repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "exec-runner-service-print":
+      return printResult(buildExecRunnerService({ agentHome, repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "exec-runner-service-write":
+      return printResult(writeExecRunnerService({ agentHome, dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
+    case "exec-runner-service-status":
+      return printResult(execRunnerServiceStatus({ agentHome, dir: args.dir, repoDir: args.repo || process.cwd(), intervalSeconds: args["interval-seconds"] }));
     case "exchange-runner-settings-print":
       return printResult(buildOpusRunnerSettings());
     case "exchange-runner-settings-write":
@@ -298,59 +285,39 @@ export async function runAgentCli(argv) {
       return printResult(buildOpusEditSettings({ repoDir: args.repo }));
     case "opus-edit-settings-write":
       return printResult(writeOpusEditSettings({ settingsPath: args.settings, repoDir: args.repo }));
-    case "telegram-codex-service-print":
-      return printResult(buildTelegramCodexService({ agentHome, mode: args.mode || "timer", longPollSeconds: args["long-poll-seconds"] }));
-    case "telegram-codex-service-write":
-      return printResult(writeTelegramCodexService({ agentHome, dir: requireArg(args, "dir"), mode: args.mode || "timer", longPollSeconds: args["long-poll-seconds"] }));
-    case "telegram-codex-service-status":
-      return printResult(telegramCodexServiceStatus({ dir: args.dir, mode: args.mode || "timer" }));
-    case "telegram-codex-approval-send":
-      return printResult(await approveAndSendReply({
-        agentHome,
-        id: requireArg(args, "id"),
-        transport: args.transport || "fetch",
-        memoryStateHome: args["memory-state"]
-          ? await resolveStateHome(args["memory-state"], { create: false })
-          : undefined,
-      }));
-    case "telegram-codex-loop":
-      return printResult(await telegramCodexLoop({
+    case "dashboard-once":
+      return printResult(await dashboardOnce({
         agentHome,
         transport: args.transport || "fetch",
-        allowRealCodex: Boolean(args["allow-real-codex"]),
-        iterations: args.iterations,
-        sleepSeconds: args["sleep-seconds"],
-        memoryStateHome: args["memory-state"]
-          ? await resolveStateHome(args["memory-state"], { create: false })
-          : undefined,
+        longPollSeconds: args["long-poll-seconds"],
+        dashboardChatId: args["dashboard-chat-id"],
       }));
-    case "telegram-codex-bridge": {
-      // Foreground long-running process. SIGINT/SIGTERM abort cleanly AFTER the
-      // current cycle finishes (the in-flight long-poll is not interrupted).
+    case "dashboard-bridge": {
       const controller = new AbortController();
       const onSignal = () => controller.abort();
       process.on("SIGINT", onSignal);
       process.on("SIGTERM", onSignal);
       try {
-        return printResult(await telegramCodexBridge({
+        return printResult(await dashboardBridge({
           agentHome,
           transport: args.transport || "fetch",
-          allowRealCodex: Boolean(args["allow-real-codex"]),
           longPollSeconds: args["long-poll-seconds"],
           maxCycles: args["max-cycles"],
-          maxRuntimeSeconds: args["max-runtime-seconds"],
+          sleepSeconds: args["sleep-seconds"],
+          dashboardChatId: args["dashboard-chat-id"],
           abortSignal: controller.signal,
-          memoryStateHome: args["memory-state"]
-            ? await resolveStateHome(args["memory-state"], { create: false })
-            : undefined,
         }));
       } finally {
         process.off("SIGINT", onSignal);
         process.off("SIGTERM", onSignal);
       }
     }
-    case "telegram-codex-bridge-status":
-      return printResult(telegramCodexBridgeStatus(agentHome));
+    case "dashboard-service-print":
+      return printResult(buildDashboardService({ agentHome, repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
+    case "dashboard-service-write":
+      return printResult(writeDashboardService({ agentHome, dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
+    case "dashboard-service-status":
+      return printResult(dashboardServiceStatus({ agentHome, dir: args.dir, repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
     case "help":
     case undefined:
       return printHelp();
@@ -363,18 +330,74 @@ function printResult(result) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+function initAgentRiver({ agentHome, workspaceRoot, systemdDir, repoDir }) {
+  const seeded = seedSpawnAgents({ agentHome });
+  const policy = getTelegramCodexPolicy(agentHome);
+  const workspace = workspaceRoot && !policy.workspace_root
+    ? setTelegramCodexPolicy(agentHome, { workspace_root: workspaceRoot }).telegram_codex_policy.workspace_root
+    : policy.workspace_root;
+  const unitDir = path.resolve(expandHome(systemdDir || path.join(os.homedir(), ".config", "systemd", "user")));
+  const serviceResults = [
+    writeDashboardService({ agentHome, dir: unitDir, repoDir }),
+    writeOpusRunnerService({ dir: unitDir, repoDir }),
+    writeCodexRunnerService({ dir: unitDir, repoDir }),
+    writeExecRunnerService({ agentHome, dir: unitDir, repoDir }),
+  ];
+  const telegramEnv = ensureTelegramEnvTemplate();
+  return {
+    state: agentHome,
+    workspace_root: workspace,
+    workspace_root_written: Boolean(workspaceRoot && !policy.workspace_root),
+    registry: seeded,
+    systemd_dir: unitDir,
+    units: serviceResults.map(({ unit_name, timer_name, unit_path, timer_path }) => ({
+      unit_name,
+      timer_name,
+      unit_path,
+      timer_path,
+    })),
+    telegram_env: telegramEnv,
+    next_steps: [
+      `Fill TELEGRAM_BOT_TOKEN in ${telegramEnv.path}`,
+      "systemctl --user daemon-reload",
+      "systemctl --user enable --now codex-agent-dashboard.service",
+      "systemctl --user enable --now codex-agent-opus-runner.timer",
+      "systemctl --user enable --now codex-agent-codex-runner.timer",
+      "systemctl --user enable --now codex-agent-exec-runner.timer",
+      "Send /session codex,opus -- <topic> in Telegram",
+    ],
+  };
+}
+
+function ensureTelegramEnvTemplate() {
+  const envPath = path.join(os.homedir(), ".config", "codex-agent", "telegram.env");
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
+  if (fs.existsSync(envPath)) {
+    return { path: envPath, written: false };
+  }
+  fs.writeFileSync(envPath, [
+    "# Agent River Telegram dashboard bot token.",
+    "# Fill this before enabling codex-agent-dashboard.service.",
+    "TELEGRAM_BOT_TOKEN=",
+    "",
+  ].join("\n"), { mode: 0o600 });
+  return { path: envPath, written: true };
+}
+
 function printHelp() {
   console.log(`codex-agent commands:
+  init [--state /path] [--workspace-root /path] [--systemd-dir /path]
   submit --repo /path --request "..." --mode plan
   status [task_id]
   run
   approve task_id
   reject task_id
-  inbox
-  chat-status
-  chat-prune --days 30
   exchange-submit --from human --to codex --text "..."
-  exchange-inbox [--agent codex]
+  session-open --initiator owner --participants codex,opus [--repo repo] [--budget-messages N] [--budget-minutes M] [--write-access codex] [--token-file path] [--no-kickoff] --topic "..."
+  session-list
+  session-show --id session_id
+  session-kill --id session_id
+  exchange-inbox [--agent codex] [--token-file path]
   exchange-replies --agent codex [--thread thread_id]
   exchange-thread --id msg_id
   exchange-claim --id msg_id --agent codex
@@ -385,23 +408,22 @@ function printHelp() {
   dispatch-list [--status pending|approved|rejected]
   dispatch-show --id dispatch_id
   exchange-runner --agent opus --once [--repo /path] [--settings /path/opus-runner-settings.json]
+  exchange-runner --agent codex --once [--repo /path]
+  exec-runner-once [--repo /path]
   exchange-runner-session-status [--chat-id telegram_chat_id]
   exchange-runner-service-print [--repo /path] [--interval-seconds N]
   exchange-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
   exchange-runner-service-status [--dir DIR] [--repo /path] [--interval-seconds N] [--settings /path/opus-runner-settings.json]
+  codex-runner-service-print [--repo /path] [--interval-seconds N]
+  codex-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
+  codex-runner-service-status [--dir DIR] [--repo /path] [--interval-seconds N]
+  exec-runner-service-print [--repo /path] [--interval-seconds N]
+  exec-runner-service-write --dir ~/.config/systemd/user [--repo /path] [--interval-seconds N]
+  exec-runner-service-status [--dir DIR] [--repo /path] [--interval-seconds N]
   exchange-runner-settings-print
   exchange-runner-settings-write [--settings /path/opus-runner-settings.json]
   opus-edit-settings-print [--repo /path]
   opus-edit-settings-write [--settings /path/opus-edit-settings.json] [--repo /path]
-  draft --id inbox_id
-  draft-latest
-  handoff --id inbox_id
-  handoff-latest
-  handoff-status
-  handoff-complete --id handoff_id --from-file reply.txt
-  handoff-complete-latest --from-file reply.txt
-  reply --id inbox_id --text "..."
-  reply-latest --text "..."
   pause
   resume
   budget --tokens 20000|disabled
@@ -409,28 +431,65 @@ function printHelp() {
   deny-user --user user123
   agent-enable --agent codex --kind coding
   agent-disable --agent codex
+  agent-join --name otter --style poll --capabilities read,write
+  agent-join --name localbot --style exec --exec 'command reading stdin and writing stdout' [--capabilities read] [--exec-timeout-seconds 300] [--exec-cwd /path]
+  agent-registry-list
+  registry-seed
   gateway --from user123 --text "agent status"
   telegram-update --update-json '{"message":{"from":{"id":123},"chat":{"id":456},"text":"agent status"}}'
   telegram-poll [--transport fetch|curl]
-  bridge-once [--transport fetch|curl]
-  codex-reply-once [--id chat_id]
-  telegram-codex-once --allow-real-codex [--transport fetch|curl] [--id chat_id] [--require-reply-approval]
-  reply-approval-list
-  reply-approval-approve --id approval_id
-  reply-approval-reject --id approval_id
   telegram-codex-policy
-  telegram-codex-policy-set [--enabled true|false] [--require-approval true|false] [--global-interval-seconds N] [--per-chat-interval-seconds N] [--max-model-calls-per-run N] [--default-repo /path] [--history-messages N] [--context-max-chars N] [--memory-enabled true|false] [--direct-send-enabled true|false] [--direct-send-user ID] [--direct-send-user-remove ID] [--direct-send-max-chars N] [--direct-send-daily-max N] [--direct-send-min-remaining-tokens N] [--direct-send-trusted-qa-enabled true|false] [--direct-send-trusted-qa-max-chars N] [--owner-mode-enabled true|false] [--owner-low-risk-auto-plan-enabled true|false] [--exchange-notify-enabled true|false] [--exchange-notify-chat-id ID] [--exchange-notify-max-per-cycle N] [--exchange-runner-enabled true|false] [--exchange-runner-model sonnet|opus] [--exchange-runner-max-attempts N] [--exchange-runner-timeout-seconds N] [--exchange-runner-daily-max N]
-  telegram-codex-loop-dry-run
-  telegram-codex-loop --allow-real-codex --iterations N [--sleep-seconds N] [--transport fetch|curl]
-  telegram-codex-bridge --allow-real-codex [--transport fetch|curl] [--long-poll-seconds N] [--max-cycles N] [--max-runtime-seconds N]
-  telegram-codex-bridge-status
-  telegram-codex-service-print [--mode timer|bridge] [--long-poll-seconds N]
-  telegram-codex-service-write --dir ~/.config/systemd/user [--mode timer|bridge] [--long-poll-seconds N]
-  telegram-codex-service-status [--dir DIR] [--mode timer|bridge]
-  telegram-codex-approval-send --id approval_id [--transport fetch|curl]
+  telegram-codex-policy-set [--default-repo /path] [--memory-enabled true|false] [--exchange-notify-enabled true|false] [--exchange-notify-chat-id ID] [--exchange-notify-max-per-cycle N] [--exchange-runner-enabled true|false] [--exchange-runner-model sonnet|opus] [--codex-runner-model MODEL] [--exchange-runner-max-attempts N] [--exchange-runner-timeout-seconds N] [--exchange-runner-daily-max N] [--v2-enabled true|false] [--workspace-root /path]
+  dashboard-once [--transport fetch|curl] [--long-poll-seconds N] [--dashboard-chat-id ID]
+  dashboard-bridge [--transport fetch|curl] [--long-poll-seconds N] [--max-cycles N] [--sleep-seconds N] [--dashboard-chat-id ID]
+  dashboard-service-print [--repo /path] [--long-poll-seconds N]
+  dashboard-service-write --dir ~/.config/systemd/user [--repo /path] [--long-poll-seconds N]
+  dashboard-service-status [--dir DIR] [--repo /path] [--long-poll-seconds N]
 
 Default state: ~/.codex/agent. Use --state .local-agent-state for development smoke tests.
-Phase D supports local gateway text commands (status, submit, run, approve, reject) and single-shot Telegram polling via TELEGRAM_BOT_TOKEN.`);
+Phase D supports local gateway text commands (status, submit, run, approve, reject), v2 Telegram smoke polling, and the v3 dashboard bridge via TELEGRAM_BOT_TOKEN.`);
+}
+
+function requirePollAgentTokenIfNeeded({ agentHome, name, tokenFile }) {
+  if (!isActivePollAgent(agentHome, name)) {
+    return;
+  }
+  const token = resolveAgentToken(tokenFile);
+  if (!token || !verifyAgentToken(agentHome, name, token)) {
+    throw codedError("bad_agent_token", `bad_agent_token: invalid token for ${name}`);
+  }
+}
+
+function requireSessionInitiatorTokenIfNeeded({ agentHome, initiator, tokenFile }) {
+  const normalized = String(initiator || "").trim();
+  if (!normalized.startsWith("agent:")) {
+    return;
+  }
+  const name = normalized.slice("agent:".length);
+  const registered = getRegisteredAgent(agentHome, name);
+  if (registered?.status !== "active") {
+    throw codedError("agent_not_registered", `agent_not_registered: ${name}`);
+  }
+  if (registered.style === "poll") {
+    requirePollAgentTokenIfNeeded({ agentHome, name, tokenFile });
+  }
+}
+
+function resolveAgentToken(tokenFile) {
+  if (tokenFile) {
+    try {
+      return fs.readFileSync(tokenFile, "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+  return process.env.AGENT_RIVER_TOKEN || "";
+}
+
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function resolveReplyText(args) {
@@ -445,6 +504,14 @@ function requireTaskId(args) {
     throw new Error("Missing task id");
   }
   return args._[0];
+}
+
+function requireSession(agentHome, id) {
+  const session = getSession(agentHome, id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return session;
 }
 
 function filterDispatchApprovals(dispatches, status) {

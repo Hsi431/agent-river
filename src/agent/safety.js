@@ -160,27 +160,9 @@ function readCostEntries(agentHome) {
 }
 
 const DEFAULT_TELEGRAM_CODEX_POLICY = {
-  enabled: false,
-  require_approval: true,
-  global_interval_seconds: 300,
-  per_chat_interval_seconds: 300,
-  max_model_calls_per_run: 1,
   default_repo: null,
-  history_messages: 8,
-  context_max_chars: 6000,
   memory_enabled: false,
-  direct_send_enabled: false,
   direct_send_user_allowlist: [],
-  direct_send_max_chars: 280,
-  direct_send_daily_max: 20,
-  direct_send_memory: false,
-  direct_send_allow_action_claims: false,
-  direct_send_min_remaining_tokens: 2000,
-  direct_send_classes: ["ack", "greeting", "smalltalk"],
-  direct_send_trusted_qa_enabled: false,
-  direct_send_trusted_qa_max_chars: 1200,
-  owner_mode_enabled: false,
-  owner_low_risk_auto_plan_enabled: true,
   exchange_notify_enabled: false,
   exchange_notify_chat_id: null,
   exchange_notify_max_per_cycle: 3,
@@ -190,9 +172,11 @@ const DEFAULT_TELEGRAM_CODEX_POLICY = {
   exchange_runner_max_attempts: 2,
   exchange_runner_timeout_seconds: 600,
   exchange_runner_daily_max: 20,
+  // v2: opt-in routing flag + workspace root for the repo resolver. v2 is off by
+  // default so v1 behavior is unchanged until the owner enables it.
+  v2_enabled: false,
+  workspace_root: null,
 };
-
-const DIRECT_SEND_CLASSES = ["ack", "greeting", "smalltalk"];
 
 export function getTelegramCodexPolicy(agentHome) {
   return readAgentConfig(agentHome).telegram_codex_policy;
@@ -201,56 +185,11 @@ export function getTelegramCodexPolicy(agentHome) {
 export function setTelegramCodexPolicy(agentHome, patch = {}) {
   const config = readAgentConfig(agentHome);
   const next = { ...config.telegram_codex_policy };
-  if (patch.enabled !== undefined) {
-    next.enabled = parseBool(patch.enabled, "enabled");
-  }
-  if (patch.require_approval !== undefined) {
-    next.require_approval = parseBool(patch.require_approval, "require-approval");
-  }
-  if (patch.global_interval_seconds !== undefined) {
-    next.global_interval_seconds = requirePositiveNumber(patch.global_interval_seconds, "global-interval-seconds");
-  }
-  if (patch.per_chat_interval_seconds !== undefined) {
-    next.per_chat_interval_seconds = requirePositiveNumber(patch.per_chat_interval_seconds, "per-chat-interval-seconds");
-  }
-  if (patch.max_model_calls_per_run !== undefined) {
-    next.max_model_calls_per_run = requirePositiveInteger(patch.max_model_calls_per_run, "max-model-calls-per-run");
-  }
   if (patch.default_repo !== undefined) {
     next.default_repo = patch.default_repo === null ? null : requireNonEmptyString(patch.default_repo, "default-repo");
   }
-  if (patch.history_messages !== undefined) {
-    next.history_messages = requirePositiveInteger(patch.history_messages, "history-messages");
-  }
-  if (patch.context_max_chars !== undefined) {
-    next.context_max_chars = requirePositiveInteger(patch.context_max_chars, "context-max-chars");
-  }
   if (patch.memory_enabled !== undefined) {
     next.memory_enabled = parseBool(patch.memory_enabled, "memory-enabled");
-  }
-  if (patch.direct_send_enabled !== undefined) {
-    next.direct_send_enabled = parseBool(patch.direct_send_enabled, "direct-send-enabled");
-  }
-  if (patch.direct_send_max_chars !== undefined) {
-    next.direct_send_max_chars = requirePositiveInteger(patch.direct_send_max_chars, "direct-send-max-chars");
-  }
-  if (patch.direct_send_daily_max !== undefined) {
-    next.direct_send_daily_max = requireNonNegativeInteger(patch.direct_send_daily_max, "direct-send-daily-max");
-  }
-  if (patch.direct_send_min_remaining_tokens !== undefined) {
-    next.direct_send_min_remaining_tokens = requireNonNegativeInteger(patch.direct_send_min_remaining_tokens, "direct-send-min-remaining-tokens");
-  }
-  if (patch.direct_send_trusted_qa_enabled !== undefined) {
-    next.direct_send_trusted_qa_enabled = parseBool(patch.direct_send_trusted_qa_enabled, "direct-send-trusted-qa-enabled");
-  }
-  if (patch.direct_send_trusted_qa_max_chars !== undefined) {
-    next.direct_send_trusted_qa_max_chars = requirePositiveInteger(patch.direct_send_trusted_qa_max_chars, "direct-send-trusted-qa-max-chars");
-  }
-  if (patch.owner_mode_enabled !== undefined) {
-    next.owner_mode_enabled = parseBool(patch.owner_mode_enabled, "owner-mode-enabled");
-  }
-  if (patch.owner_low_risk_auto_plan_enabled !== undefined) {
-    next.owner_low_risk_auto_plan_enabled = parseBool(patch.owner_low_risk_auto_plan_enabled, "owner-low-risk-auto-plan-enabled");
   }
   if (patch.exchange_notify_enabled !== undefined) {
     next.exchange_notify_enabled = parseBool(patch.exchange_notify_enabled, "exchange-notify-enabled");
@@ -281,22 +220,19 @@ export function setTelegramCodexPolicy(agentHome, patch = {}) {
   if (patch.exchange_runner_daily_max !== undefined) {
     next.exchange_runner_daily_max = requireNonNegativeInteger(patch.exchange_runner_daily_max, "exchange-runner-daily-max");
   }
-  if (patch.direct_send_memory !== undefined && parseBool(patch.direct_send_memory, "direct-send-memory")) {
-    throw new Error("Refusing: direct-send memory context is not allowed in DS1");
-  }
-  if (patch.direct_send_allow_action_claims !== undefined && parseBool(patch.direct_send_allow_action_claims, "direct-send-allow-action-claims")) {
-    throw new Error("Refusing: direct-send action claims are not allowed");
-  }
   if (patch.direct_send_user_add !== undefined) {
     const id = requireNonEmptyString(patch.direct_send_user_add, "direct-send-user");
     next.direct_send_user_allowlist = Array.from(new Set([...(next.direct_send_user_allowlist || []), id]));
   }
+  if (patch.v2_enabled !== undefined) {
+    next.v2_enabled = parseBool(patch.v2_enabled, "v2-enabled");
+  }
+  if (patch.workspace_root !== undefined) {
+    next.workspace_root = patch.workspace_root === null ? null : requireNonEmptyString(patch.workspace_root, "workspace-root");
+  }
   if (patch.direct_send_user_remove !== undefined) {
     const id = requireNonEmptyString(patch.direct_send_user_remove, "direct-send-user-remove");
     next.direct_send_user_allowlist = (next.direct_send_user_allowlist || []).filter((u) => u !== id);
-  }
-  if (next.enabled && !next.require_approval) {
-    throw new Error("Refusing to enable the loop without approval mode; set --require-approval true first");
   }
   if (next.memory_enabled && !next.default_repo) {
     throw new Error("Refusing to enable memory without a default repo; set --default-repo /path first");
@@ -307,28 +243,11 @@ export function setTelegramCodexPolicy(agentHome, patch = {}) {
 function normalizeTelegramCodexPolicy(value) {
   const v = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return {
-    enabled: Boolean(v.enabled),
-    require_approval: v.require_approval === undefined ? true : Boolean(v.require_approval),
-    global_interval_seconds: positiveNumberOr(v.global_interval_seconds, DEFAULT_TELEGRAM_CODEX_POLICY.global_interval_seconds),
-    per_chat_interval_seconds: positiveNumberOr(v.per_chat_interval_seconds, DEFAULT_TELEGRAM_CODEX_POLICY.per_chat_interval_seconds),
-    max_model_calls_per_run: positiveIntegerOr(v.max_model_calls_per_run, DEFAULT_TELEGRAM_CODEX_POLICY.max_model_calls_per_run),
     default_repo: typeof v.default_repo === "string" && v.default_repo.trim() ? v.default_repo.trim() : null,
-    history_messages: positiveIntegerOr(v.history_messages, DEFAULT_TELEGRAM_CODEX_POLICY.history_messages),
-    context_max_chars: positiveIntegerOr(v.context_max_chars, DEFAULT_TELEGRAM_CODEX_POLICY.context_max_chars),
     memory_enabled: Boolean(v.memory_enabled),
-    direct_send_enabled: Boolean(v.direct_send_enabled),
     direct_send_user_allowlist: Array.isArray(v.direct_send_user_allowlist)
       ? v.direct_send_user_allowlist.map(String).filter(Boolean).sort()
       : [],
-    direct_send_max_chars: positiveIntegerOr(v.direct_send_max_chars, DEFAULT_TELEGRAM_CODEX_POLICY.direct_send_max_chars),
-    direct_send_daily_max: nonNegativeIntegerOr(v.direct_send_daily_max, DEFAULT_TELEGRAM_CODEX_POLICY.direct_send_daily_max),
-    direct_send_min_remaining_tokens: nonNegativeIntegerOr(v.direct_send_min_remaining_tokens, DEFAULT_TELEGRAM_CODEX_POLICY.direct_send_min_remaining_tokens),
-    direct_send_trusted_qa_enabled: Boolean(v.direct_send_trusted_qa_enabled),
-    direct_send_trusted_qa_max_chars: positiveIntegerOr(v.direct_send_trusted_qa_max_chars, DEFAULT_TELEGRAM_CODEX_POLICY.direct_send_trusted_qa_max_chars),
-    owner_mode_enabled: Boolean(v.owner_mode_enabled),
-    owner_low_risk_auto_plan_enabled: v.owner_low_risk_auto_plan_enabled === undefined
-      ? DEFAULT_TELEGRAM_CODEX_POLICY.owner_low_risk_auto_plan_enabled
-      : Boolean(v.owner_low_risk_auto_plan_enabled),
     exchange_notify_enabled: Boolean(v.exchange_notify_enabled),
     exchange_notify_chat_id: typeof v.exchange_notify_chat_id === "string" && v.exchange_notify_chat_id.trim() ? v.exchange_notify_chat_id.trim() : null,
     exchange_notify_max_per_cycle: positiveIntegerOr(v.exchange_notify_max_per_cycle, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_notify_max_per_cycle),
@@ -340,19 +259,9 @@ function normalizeTelegramCodexPolicy(value) {
     exchange_runner_max_attempts: positiveIntegerOr(v.exchange_runner_max_attempts, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_max_attempts),
     exchange_runner_timeout_seconds: positiveIntegerOr(v.exchange_runner_timeout_seconds, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_timeout_seconds),
     exchange_runner_daily_max: nonNegativeIntegerOr(v.exchange_runner_daily_max, DEFAULT_TELEGRAM_CODEX_POLICY.exchange_runner_daily_max),
-    // DS1: these are hard-forced off regardless of stored value.
-    direct_send_memory: false,
-    direct_send_allow_action_claims: false,
-    direct_send_classes: normalizeDirectSendClasses(v.direct_send_classes),
+    v2_enabled: Boolean(v.v2_enabled),
+    workspace_root: typeof v.workspace_root === "string" && v.workspace_root.trim() ? v.workspace_root.trim() : null,
   };
-}
-
-function normalizeDirectSendClasses(value) {
-  if (!Array.isArray(value)) {
-    return [...DEFAULT_TELEGRAM_CODEX_POLICY.direct_send_classes];
-  }
-  const kept = value.map(String).filter((c) => DIRECT_SEND_CLASSES.includes(c));
-  return Array.from(new Set(kept));
 }
 
 function nonNegativeIntegerOr(value, fallback) {

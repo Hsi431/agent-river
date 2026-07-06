@@ -8,6 +8,8 @@ import { agentPaths } from "../src/agent/paths.js";
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { readJsonl, writeJsonl } from "../src/lib/jsonl.js";
 import { DISPATCH_CHANNEL } from "../src/agent/dispatch.js";
+import { submitExchangeMessage } from "../src/agent/exchange.js";
+import { openSession } from "../src/agent/sessions.js";
 
 const REPO = "/home/fnata_claw/codex-memory-river";
 // A throwaway settings file that exists, so tests exercise the runner past the
@@ -134,9 +136,8 @@ test("exchange runner success completes the message and records a dispatch row",
   assert.equal(replies.length, 1);
   assert.equal(replies[0].message_id, "msg_ok");
   assert.equal(dispatch.at(-1).outcome, "replied");
-  // Send-only: the runner never creates a new exchange message or chat inbox row.
+  // Send-only: the runner never creates a new exchange message.
   assert.deepEqual(readJsonl(agentPaths(agentHome).exchangeMessages), beforeMessages);
-  assert.equal(readJsonl(agentPaths(agentHome).chatInbox).length, 0);
 });
 
 test("exchange runner creates dispatch approval from a valid final reply block", async () => {
@@ -270,15 +271,18 @@ test("exchange runner writes a terminal blocked reply after max attempts", async
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true, exchange_runner_max_attempts: 2 });
   seedMessages(agentHome, [eligible("msg_blocked")]);
-  const failing = async () => ({ ok: false, timedOut: true });
+  const failing = async () => ({ ok: false, timedOut: true, error: "U9_OPUS_FAILURE_TOKEN old model invalid" });
 
   const first = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: failing });
   const second = await runExchangeRunnerOnce({ agentHome, repoDir: REPO, settingsPath: SETTINGS_OK, spawnImpl: failing });
   const replies = readJsonl(agentPaths(agentHome).exchangeReplies);
+  const dispatch = readJsonl(agentPaths(agentHome).exchangeRunnerDispatch);
 
   assert.equal(first.reason, "failed_released");
   assert.equal(second.reason, "blocked_terminal");
   assert.equal(second.attempt, 2);
+  assert.match(dispatch[0].error, /U9_OPUS_FAILURE_TOKEN/);
+  assert.match(dispatch[1].error, /U9_OPUS_FAILURE_TOKEN/);
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /^Blocked:/);
   // Message is now completed -> no longer eligible.
@@ -383,6 +387,79 @@ test("exchange runner never passes raw message text into the spawn argv", async 
 
   assert.ok(capturedArgv.includes("msg_noleak"));
   assert.equal(capturedArgv.includes(SECRET_TEXT), false);
+});
+
+test("exchange runner uses session message repo as cwd and marks bound repo in prompt", async () => {
+  const agentHome = makeAgentHome("u12-opus-runner-repo-");
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u12-opus-repo-")));
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    topic: "U12 bound repo reaches opus runner cwd.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    sessionId: session.session_id,
+    repo,
+    text: "U12 opus repo cwd check.",
+  });
+  let invocation = null;
+
+  await runExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    settingsPath: SETTINGS_OK,
+    spawnImpl: async ({ invocation: inv }) => {
+      invocation = inv;
+      return { ok: true, text: "No findings." };
+    },
+  });
+
+  assert.equal(invocation.cwd, repo);
+  assert.equal(invocation.args[invocation.args.indexOf("--add-dir") + 1], repo);
+  assert.match(invocation.prompt, new RegExp(`本 session 綁定 repo:${escapeRegExp(repo)}`));
+});
+
+test("exchange runner fails closed to home and logs repo_fallback when session repo is invalid", async () => {
+  const agentHome = makeAgentHome("u12-opus-runner-repo-fallback-");
+  const invalidRepo = path.join(agentHome, "missing-repo");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });
+  const session = await openSession({
+    agentHome,
+    initiator: "owner",
+    participants: "codex,opus",
+    topic: "U12 invalid repo falls back for opus runner.",
+  });
+  submitExchangeMessage({
+    agentHome,
+    from: "codex",
+    to: "opus",
+    sessionId: session.session_id,
+    repo: invalidRepo,
+    text: "U12 opus invalid repo check.",
+  });
+  let cwd = null;
+
+  await runExchangeRunnerOnce({
+    agentHome,
+    repoDir: REPO,
+    settingsPath: SETTINGS_OK,
+    spawnImpl: async ({ invocation }) => {
+      cwd = invocation.cwd;
+      return { ok: true, text: "No findings." };
+    },
+  });
+  const dispatch = readJsonl(agentPaths(agentHome).exchangeRunnerDispatch).at(-1);
+
+  assert.equal(cwd, os.homedir());
+  assert.equal(dispatch.repo_fallback.requested, invalidRepo);
+  assert.equal(dispatch.repo_fallback.reason, "realpath_failed");
 });
 
 test("exchange runner fails closed when the restricted settings file is missing", async () => {
@@ -607,4 +684,8 @@ function latestClaim(agentHome, messageId) {
   return readJsonl(agentPaths(agentHome).exchangeClaims)
     .filter((c) => c.message_id === messageId)
     .at(-1) || null;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

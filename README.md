@@ -1,121 +1,66 @@
 # Agent River
 
-**Drive Codex and Claude coding agents from Telegram — with a human approval gate on every risky move.**
+**Drive local Codex and Claude agents from Telegram through the v3 dashboard.**
 
 [English](README.md) · [繁體中文](README.zh-Hant.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)
-![Runtime deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)
-[![CI](https://github.com/Hsi431/agent-river/actions/workflows/ci.yml/badge.svg)](https://github.com/Hsi431/agent-river/actions/workflows/ci.yml)
+Agent River is a local control plane for AI coding agents. It keeps state on
+disk, starts bounded Codex/Claude workers for individual turns, and uses a
+Telegram dashboard for owner operations, v2 agent launches, exchange
+notifications, and dispatch approvals.
 
-Agent River is a small, local control plane that lets you queue, run, and supervise
-multiple AI coding agents — Codex and Claude (Opus/Sonnet) — from your phone over
-Telegram. The agents do the work; **you stay in the loop.** Edits and cross-agent routing
-are governed by an approval policy — most actions wait for your tap — and
-high-risk operations like commit, push, deploy, install, and delete always stay
-manual.
+Status: early but usable for a single local operator. The v3 dashboard, v2
+launcher, exchange/session ledgers, dispatch approvals, runners, safety gates,
+and secret scanning are covered by the test suite.
 
-It runs entirely on your own machine, keeps all state on local disk, has **zero
-runtime dependencies**, and never spawns a shell — agents are launched as bounded,
-tool-restricted workers, not handed a blank cheque.
+## Quickstart
 
-> Status: **early but usable** for local, single-operator use. The core flows —
-> Telegram gateway, approvals, dispatch, runners, ledger, secret-scan — are
-> covered by 360+ tests and run without `codex-memory-river`.
+System requirement: **Linux + systemd (user session); other platforms are not supported.**
 
----
-
-## What it feels like
-
-```text
-You      ›  agent status
-Bot      ›  Tasks: 3  queued=1 done=2 failed=0  kill_switch=false  remaining_tokens=18540
-
-You      ›  @claude review the latest diff for security issues
-Bot      ›  Claude received it, working on it now. (msg_17a3…)
-            … a tool-restricted, read-only Claude reviews the repo …
-Bot      ›  Claude:
-            Findings by severity:
-            • src/auth.js:42 — token compared with == (timing leak). …
-            No edits made — the review lane is read-only.
-
-You      ›  @opus fix the typo in the README intro
-Bot      ›  Pending edit task created (task_17a3…); nothing changes until you approve.
-            [ Approve ]  [ Reject ]  [ Status ]
-You      ›  (taps Approve)
-Bot      ›  Edit task approved and completed (task_17a3…).
-            Changes: README.md | 2 +-
-            Verify:  pass (npm test)
+```sh
+git clone https://github.com/Hsi431/agent-river.git agent-river
+cd agent-river
+npm install
+node bin/codex-agent.js init
 ```
 
-*Illustrative. The bot replies in your language; owner-facing notices default to
-Traditional Chinese for Chinese input.*
+Then fill `~/.config/codex-agent/telegram.env`, reload and enable the generated
+user units:
 
----
-
-## Why Agent River
-
-- 🛡️ **Approval-gated by design.** Every edit task enters an approval state
-  server-side, so nothing edits files unnoticed; most need an explicit owner
-  Approve, and only small low-risk owner edits can be auto-approved by policy.
-  Agents can only *propose* cross-agent work — routing needs your consent, and
-  execution needs its own approval.
-- 🧯 **Brakes that actually stop the car.** A global kill switch (`pause`/`resume`),
-  a daily token budget, and per-lane daily caps. A corrupt or unreadable config
-  **fails closed** — kill switch on, budget zero.
-- 👥 **Two authority tiers.** A *gateway allowlist* grants bounded operator access
-  (status, submit/run plan tasks, send messages). *Owner* authority — required for
-  edit execution, dispatch routing, callback approvals, and model controls — needs
-  owner mode plus membership in a separate owner allowlist.
-- 🔒 **Least-privilege agents.** The review lane spawns a headless Claude locked to
-  read-only tools by a generated settings file; the edit lane can change files but
-  never commit, push, deploy, install, delete, reach the network, or dispatch to
-  other agents. A disallowed `git HEAD` change is detected and fails the task.
-- 🧹 **Secret scanning on the paths that leave your machine.** Agent-to-agent
-  messages, replies, diffs, test output, and outbound Telegram replies are scanned
-  and redacted — OpenAI/GitHub/AWS/Slack/JWT/Google and Telegram tokens,
-  credentialed URLs, key assignments, and more. (Raw chat you send is stored
-  locally as-is, so keep agent state private.)
-- 📦 **No supply chain to trust.** Zero runtime dependencies. Every subprocess is
-  launched via `execFile` — never a shell. Bot tokens never touch argv or agent
-  state (the curl transport passes the token through a stdin config file).
-- 🤝 **Multi-agent, multi-workflow.** Plan and edit lanes, a read-only review
-  runner, owner Q&A, deterministic direct-send for trivial acks, and
-  owner-approved Codex⇄Claude dispatch — all over one Telegram bot.
-
----
-
-## How it works
-
-The **persistent agent is the Node orchestrator** and its on-disk state under
-`~/.codex/agent`. Codex and Claude are **spawned as stateless, bounded workers**
-for individual steps, then exit. Telegram is treated as an untrusted transport:
-only allowlisted users reach the gateway, and model output is untrusted until it
-clears Node-owned safety and approval gates.
-
-```text
-Telegram ──▶ Gateway (allowlist · parse · audit)
-                 │
-                 ├─ plan/edit task ──▶ approval gate ──▶ bounded Codex/Claude worker ──▶ ledger
-                 ├─ @opus / @claude ──▶ read-only review runner (restricted settings)
-                 └─ agent-dispatch ──▶ owner approves routing ──▶ (still needs execution approval)
-
-Safety envelope around everything: kill switch · token budget · secret scan · fail-closed config
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now codex-agent-dashboard.service
+systemctl --user enable --now codex-agent-opus-runner.timer
+systemctl --user enable --now codex-agent-codex-runner.timer
+systemctl --user enable --now codex-agent-exec-runner.timer
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full model and
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for what's next.
+Start a Telegram session:
 
----
+```text
+/session codex,opus -- your task
+```
 
-## Requirements
+Optional: after `npm link`, the CLI is also available as `agent-river <cmd>`.
 
-- **Node.js 20+** (required).
-- `codex` CLI — optional, for Codex execution.
-- **Claude Code 2.1.162+** — optional, for the Claude/Opus review and edit runners.
-- A **Telegram bot token** — optional, for Telegram polling/bridge flows.
-- `codex-memory-river` — optional, for memory context when memory is enabled.
+## Core Flows
+
+- **v3 dashboard:** the production Telegram long-poller. It accepts owner
+  messages, handles dashboard callbacks, and flushes v2 outbox, exchange
+  notifications, and dispatch notifications.
+- **v2 launcher:** owners can send `@claude` or `@codex` messages with
+  `repo=` and `mode=read|write`. The bot acknowledges immediately; the result
+  is delivered later from the outbox.
+- **Exchange mailbox:** agents exchange scoped messages through local JSONL
+  ledgers. Runners claim work and write replies.
+- **Dispatch approvals:** agents can propose cross-agent routing; Node creates a
+  pending approval and waits for owner consent.
+- **Safety:** kill switch, daily budget, secret scanning, fail-closed config,
+  poller locks, and process-group termination for v2 turns.
+
+Retired v1 surfaces are gone: chat inbox/draft/handoff lanes, direct-send,
+manual reply approval, `telegram-codex-*`, `bridge-once`, `codex-reply-once`,
+and `codex-agent-telegram-bridge.service`.
 
 ## Install
 
@@ -126,84 +71,78 @@ npm install
 npm test
 ```
 
-Run the CLI straight from the source tree:
+Run from the source tree:
 
 ```sh
 node bin/codex-agent.js --help
 node bin/codex-agent.js status --state ~/.codex/agent
 ```
 
-For development, use an isolated state directory so you never touch real state:
+## Telegram Dashboard
 
-```sh
-node bin/codex-agent.js status --state .local-agent-state
-```
-
-## Telegram quickstart
-
-Keep the token in the environment, never in agent state:
+Keep the bot token out of agent state:
 
 ```sh
 export TELEGRAM_BOT_TOKEN='...'
-node bin/codex-agent.js allow-user --state ~/.codex/agent --user '<telegram_user_id>'
-node bin/codex-agent.js telegram-poll --state ~/.codex/agent --transport curl
-```
-
-Send `agent help` or `agent status` to the bot, then poll once. For a long-running
-local bridge, generate the systemd `--user` files and **review them before enabling
-manually** — Agent River writes unit files but never runs `systemctl`:
-
-```sh
 mkdir -p ~/.config/codex-agent ~/.config/systemd/user
 printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" > ~/.config/codex-agent/telegram.env
-
-node bin/codex-agent.js telegram-codex-service-print --state ~/.codex/agent --mode bridge
-node bin/codex-agent.js telegram-codex-service-write --state ~/.codex/agent --mode bridge --dir ~/.config/systemd/user
-node bin/codex-agent.js telegram-codex-service-status --state ~/.codex/agent --mode bridge
 ```
 
-## Telegram commands
+Generate the v3 dashboard service:
 
-Once the bot is running and your user id is allowlisted, these are the messages
-you actually type **into the Telegram chat** (not the shell):
+```sh
+node bin/codex-agent.js dashboard-service-print --state ~/.codex/agent --repo "$PWD"
+node bin/codex-agent.js dashboard-service-write --state ~/.codex/agent --repo "$PWD" --dir ~/.config/systemd/user
+node bin/codex-agent.js dashboard-service-status --state ~/.codex/agent --repo "$PWD"
+```
 
-| You type | What it does |
-|---|---|
-| `agent help` | List the available commands |
-| `status` · `agent status` | Show the task queue and safety status |
-| `agent status task_…` | Show one task's status |
-| `agent models` | Show the active Claude/Codex models and local token usage (owners also get inline model-switch buttons) |
-| `agent submit --repo /path --request "…"` | Queue a plan task (still needs approval to run) |
-| `agent run task_…` | Advance a task by one step |
-| `agent approve task_…` · `agent reject task_…` | Approve or reject a pending task |
-| `agent thread msg_…` | Show an exchange thread |
-| `agent config opus-model sonnet\|opus\|default` | Set the Claude runner model |
-| `agent config codex-model <model\|default>` | Set the Codex runner model |
-| `@claude <message>` | Ask Claude — read-only review lane (alias for `@opus`) |
-| `@opus <message>` | Ask Claude/Opus |
-| `@codex <message>` | Send a message to Codex |
-| `@opus inbox` · `@opus replies` | List pending messages / replies for that agent |
-| `name: <message>` | Same as `@name <message>` |
+Cutover from the retired bridge:
 
-Notes:
+```sh
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+cd ~/agent-river && node bin/codex-agent.js dashboard-service-write --dir ~/.config/systemd/user
+systemctl --user daemon-reload
+systemctl --user disable --now codex-agent-telegram-bridge.service
+systemctl --user enable --now codex-agent-dashboard.service
+journalctl --user -u codex-agent-dashboard.service -n 20
+```
 
-- **Inline buttons beat typing.** Pending edit tasks and dispatch approvals come
-  with `[ Approve ] [ Reject ] [ Status ]` buttons — just tap them.
-- **`@`-mentions need the target enabled first** (see the next section); otherwise
-  the bot replies that the agent is not enabled.
-- **Owner-only actions:** `@opus`-driven edits, the model-switch buttons, and
-  dispatch approvals require owner authority (owner mode + owner allowlist).
-- **Anything that isn't a command** from an allowlisted user is queued as chat,
-  not executed.
+## Owner Use
 
-## Claude/Opus review and cross-agent dispatch
+Owners are listed in `telegram_codex_policy.direct_send_user_allowlist`; this
+field is retained as the owner list after the v1 direct-send retirement.
 
-Enable Claude in the exchange mailbox and turn on the runner:
+Enable v2 routing and a workspace root:
+
+```sh
+node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
+  --v2-enabled true --workspace-root /home/you --default-repo "$PWD"
+```
+
+Messages to the dashboard:
+
+```text
+@claude repo=agent-river -- review the current diff
+@codex repo=agent-river mode=write -- update the docs
+/session codex,opus -- plan this change
+/say <session> continue with the next step
+/sessions
+/kill <session>
+/agents
+/model
+/task <session> repo=agent-river
+/status
+/stop
+```
+
+Non-owner users receive a read-only dashboard response. Plain free-form text is
+not stored in a chat inbox and does not invoke a model.
+
+## Exchange Runner
 
 ```sh
 node bin/codex-agent.js agent-enable --state ~/.codex/agent --agent opus --kind review
 node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
-  --owner-mode-enabled true \
   --exchange-runner-enabled true \
   --exchange-notify-enabled true \
   --exchange-notify-chat-id '<telegram_chat_id>' \
@@ -213,72 +152,66 @@ node bin/codex-agent.js exchange-runner-settings-write --state ~/.codex/agent
 node bin/codex-agent.js exchange-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo "$PWD"
 ```
 
-Agents propose dispatches as a fenced JSON block in their final reply. They only
-*propose* — Node creates a pending approval, and you must approve routing before
-anything is sent:
+## Connect Any Agent
 
-````md
-```agent-dispatch
-{"to":"codex","task":"Inspect the result and report observations only.","reason":"Codex owns the follow-up.","mode":"plan"}
+Exec-style agents use the simple contract described in
+[`docs/AGENT_PROMPT_TEMPLATE.md`](docs/AGENT_PROMPT_TEMPLATE.md): stdin in,
+stdout out. Agent River owns the mailbox claim/reply path.
+
+1. Write an entrypoint that reads one request envelope from stdin and writes the
+   final reply to stdout.
+2. Register it:
+
+```sh
+node bin/codex-agent.js agent-join --state ~/.codex/agent \
+  --name localbot --style exec \
+  --exec '/path/to/localbot --once' \
+  --exec-timeout-seconds 300
 ```
-````
+
+3. Approve the pending join in the dashboard, then run the exec runner:
+
+```sh
+node bin/codex-agent.js exec-runner-once --state ~/.codex/agent --repo "$PWD"
+node bin/codex-agent.js exec-runner-service-write --state ~/.codex/agent --dir ~/.config/systemd/user --repo "$PWD"
+```
+
+Poll-style agents can adapt the token-protected mailbox CLI with
+[`scripts/poll-adapter-example.sh`](scripts/poll-adapter-example.sh).
+
+Dispatch approvals:
 
 ```sh
 node bin/codex-agent.js dispatch-list --state ~/.codex/agent --status pending
 node bin/codex-agent.js dispatch-show --state ~/.codex/agent --id dispatch_...
 ```
 
-## Safety model
+## Debug Telegram Polling
 
-This is the heart of the project, so it's worth stating plainly:
-
-- **Two authority tiers.** Gateway allowlist = bounded operator access. Owner
-  authority (owner mode + owner allowlist) is required for edit execution, callback
-  approvals, dispatch routing, and model controls.
-- **Owner approval before any edit execution.** Edit tasks are forced to `pending`
-  server-side; callers cannot bypass the gate.
-- **Dispatch approval is routing consent only.** Approving a Codex edit dispatch
-  still triggers the normal execution approval before any file changes.
-- **Agents cannot post to the mailbox themselves.** The review runner's settings
-  deny `exchange-submit`/`claim`/`release`; Node owns mailbox writes.
-- **Dangerous requests are declined** with a manual-action notice (commit, push,
-  deploy, install, delete, reset, …).
-- **Secrets are scanned and redacted** on agent-to-agent messages, replies, diffs,
-  test output, and outbound Telegram replies; a reply that still looks
-  secret-bearing is withheld. Raw inbound chat is stored locally unredacted — keep
-  agent state private.
-- **Fail-closed config:** unreadable/invalid config disables everything.
-- **External trust boundary.** Claude-runner safety depends on Claude Code
-  continuing to enforce headless tool allowlists and reject compound commands that
-  exceed an allowed Bash pattern. Treat Claude Code upgrades as security-sensitive.
-
-Agent state under `~/.codex/agent` may contain raw local task, chat, and audit
-text. **Keep it private and out of git.** See [`SECURITY.md`](SECURITY.md) for the
-full threat model and how to report a vulnerability.
-
-## Known limitations
-
-- Use **one** primary bridge/runner set per state directory. JSONL ledgers are not
-  a distributed multi-writer database.
-- Gateway use has token budgets and lane/chat limits, but no general per-user
-  request throttle.
-- Generated systemd units assume paths without whitespace. Review generated files
-  before enabling them.
-
-## Optional: codex-memory-river
-
-`codex-memory-river` is loaded only when enabled by policy or via `--memory-state`.
-If it is requested but unavailable, Agent River fails closed with a clear
-`memory_unavailable` / `memory_context_failed` reason instead of crashing startup.
-To opt in from a workspace containing both repos:
+`telegram-poll` and `telegram-update` remain as v2/transport smoke paths:
 
 ```sh
-npm install --no-save ../codex-memory-river
-node bin/codex-agent.js telegram-codex-policy-set --state ~/.codex/agent \
-  --default-repo /path/to/repo --memory-enabled true
+node bin/codex-agent.js telegram-poll --state ~/.codex/agent --transport curl
+node bin/codex-agent.js telegram-update --state ~/.codex/agent --update-json '{"message":{"from":{"id":123},"chat":{"id":456},"text":"/status"}}'
 ```
 
-## Verifying changes
+For normal operation, run `dashboard-bridge` or the dashboard systemd service.
+
+## Safety Model
+
+- Owner authority comes from the retained owner allowlist.
+- Write turns require explicit v2 `mode=write` and repo resolution.
+- Dangerous local operations such as commit, push, deploy, install, delete, and
+  reset stay outside Telegram automation.
+- Agent output is scanned before it leaves the machine.
+- Invalid config fails closed.
+- The dashboard lock prevents multiple dashboard pollers for one state
+  directory.
+
+Agent state under `~/.codex/agent` can contain local task and audit text. Keep it
+private and out of git.
+
+## Verify
 
 ```sh
 npm test
@@ -287,10 +220,6 @@ npm pack --dry-run
 git diff --check
 ```
 
-## Contributing & license
-
-Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Security reports:
-[`SECURITY.md`](SECURITY.md). For the operational runbook, see
-[`docs/AGENT_TELEGRAM_POLLING.md`](docs/AGENT_TELEGRAM_POLLING.md).
+Operational details: [`docs/AGENT_TELEGRAM_POLLING.md`](docs/AGENT_TELEGRAM_POLLING.md).
 
 Licensed under the [MIT License](LICENSE).

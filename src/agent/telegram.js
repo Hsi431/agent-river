@@ -3,12 +3,12 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { shortHash } from "../lib/hash.js";
 import { appendJsonl, readJsonl } from "../lib/jsonl.js";
-import { scanSecrets } from "../lib/secret-scan.js";
-import { enqueueChatMessage, listPendingChatReplies, markChatReplySent } from "./chat.js";
+import { scanSecrets, redactSecrets } from "../lib/secret-scan.js";
+import { routeUpdate, handleV2Message, handleV2Stop, handleV2Status, latestV2Outbox, markV2OutboxSent } from "./v2/poller.js";
 import { handleGatewayMessage } from "./gateway.js";
 import { agentPaths } from "./paths.js";
-import { getSafetyStatus, getTelegramCodexPolicy, isExchangeAgentEnabled, setTelegramCodexPolicy } from "./safety.js";
-import { isOwner, ownerTaskReplyMarkup } from "./owner-mode.js";
+import { checkSafety, getTelegramCodexPolicy, isExchangeAgentEnabled } from "./safety.js";
+import { stopAllTurns } from "./v2/kill.js";
 import {
   approveDispatch,
   DISPATCH_CHANNEL,
@@ -21,7 +21,6 @@ import {
   parseDispatchProposal,
   rejectDispatch,
 } from "./dispatch.js";
-import { queueChatReply } from "./chat.js";
 
 export async function handleTelegramUpdate({ agentHome, update, memoryStateHome, runner, execFileImpl }) {
   const callback = extractCallbackQuery(update);
@@ -34,21 +33,18 @@ export async function handleTelegramUpdate({ agentHome, update, memoryStateHome,
     return { ok: false, payload: null, reason: "unsupported_update" };
   }
 
+  // v2 intercept (opt-in, owner-only): a single poller routes @agent / control
+  // messages to the v2 path; everything else falls through to v1 unchanged.
+  const v2 = await maybeHandleV2({ agentHome, message, execFileImpl });
+  if (v2) {
+    return v2;
+  }
+
   if (!isGatewayText(message.text, agentHome)) {
-    const chat = enqueueChatMessage({
-      agentHome,
-      channel: "telegram",
-      userId: String(message.from.id),
-      chatId: String(message.chat.id),
-      text: message.text,
-    });
     return {
-      ok: chat.allowed,
-      chat,
-      payload: chat.allowed
-        ? null
-        : { method: "sendMessage", chat_id: message.chat.id, text: "Access denied." },
-      reason: chat.allowed ? "chat_queued" : "access_denied",
+      ok: false,
+      payload: null,
+      reason: "unsupported_message",
     };
   }
 
@@ -69,11 +65,53 @@ export async function handleTelegramUpdate({ agentHome, update, memoryStateHome,
       method: "sendMessage",
       chat_id: message.chat.id,
       text: gateway.reply,
-      ...(gateway.command === "agent_models" && isOwner({ user_id: String(message.from.id) }, getTelegramCodexPolicy(agentHome))
-        ? { reply_markup: modelControlsMarkup() }
-        : {}),
       ...(gateway.reply_markup ? { reply_markup: gateway.reply_markup } : {}),
     },
+  };
+}
+
+// v2 intercept: opt-in (policy.v2_enabled), owner-only. Routes `/stop`, `/status`,
+// and `@agent ...` messages to the v2 path; returns null to fall through to v1.
+// §15.A: agent turns now run in the BACKGROUND; this function returns the start
+// ack immediately. Results arrive via the v2 outbox flushed by each poll cycle.
+export async function maybeHandleV2({ agentHome, message, execFileImpl, requireOwnerPolicy = true, v2Options = {} }) {
+  const policy = getTelegramCodexPolicy(agentHome);
+  if (!policy.v2_enabled) {
+    return null;
+  }
+  const ownerUserId = String(message.from.id);
+  if (requireOwnerPolicy && !isPolicyOwner(policy, ownerUserId)) {
+    return null; // v2 is owner-only; non-owners fall through to v1.
+  }
+  const chatId = String(message.chat.id);
+  const text = String(message.text || "").trim();
+
+  if (text === "/stop") {
+    return v2Payload(message, (await handleV2Stop()).reply);
+  }
+  if (text === "/status" || text === "/context") {
+    return v2Payload(message, handleV2Status(agentHome, { ownerUserId, chatId }).reply);
+  }
+  if (routeUpdate(text) !== "v2") {
+    return null; // not a v2 @agent message; let v1 handle it.
+  }
+
+  // §15.A: handleV2Message now returns immediately with the ack; the background
+  // turn runs independently and writes its result to the v2 outbox.
+  const result = await handleV2Message({ agentHome, ownerUserId, chatId, text, execFileImpl, ...v2Options });
+  if (!result || !result.handled) {
+    return null;
+  }
+  // Return only the ack; the full result comes via the outbox.
+  return v2Payload(message, result.reply, { v2: result });
+}
+
+function v2Payload(message, text, extra = {}) {
+  return {
+    ok: true,
+    payload: { method: "sendMessage", chat_id: message.chat.id, text: redactSecrets(String(text || "")) },
+    reason: "v2",
+    ...extra,
   };
 }
 
@@ -83,6 +121,96 @@ export function parseTelegramUpdateJson(text) {
   } catch {
     throw new Error("Invalid Telegram update JSON");
   }
+}
+
+// ─── Poller lock (§15.H) ──────────────────────────────────────────────────────
+// Acquire a cross-process lockfile when the poll loop starts. A second poller
+// process refuses with a clear error.
+
+export function acquirePollerLock(agentHome) {
+  const lockPath = agentPaths(agentHome).v2PollerLock;
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const content = JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() });
+  // O_CREAT | O_EXCL: fails atomically if the file already exists.
+  try {
+    fs.writeFileSync(lockPath, content, { flag: "wx" });
+  } catch (err) {
+    if (err.code === "EEXIST") {
+      // Check if the owning process is still alive.
+      let existing = null;
+      try {
+        existing = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+      } catch {
+        // Corrupt lock file — overwrite.
+        fs.writeFileSync(lockPath, content);
+        return lockPath;
+      }
+
+      const lockPid = existing?.pid;
+      if (!lockPid) {
+        // No PID in lock — overwrite.
+        fs.writeFileSync(lockPath, content);
+        return lockPath;
+      }
+
+      // Check if the owning process is still alive (works for any PID including our own).
+      let alive = false;
+      try {
+        process.kill(lockPid, 0);
+        alive = true;
+      } catch (killErr) {
+        // ESRCH = process does not exist (stale lock). EPERM = exists but not our process.
+        alive = killErr.code === "EPERM";
+      }
+
+      if (alive) {
+        throw new Error(
+          `v2 poller already running (pid ${lockPid}). Stop the other bridge process before starting a new one.`
+        );
+      }
+
+      // Stale lock — reclaim.
+      fs.writeFileSync(lockPath, content);
+    } else {
+      throw err;
+    }
+  }
+  return lockPath;
+}
+
+export function releasePollerLock(agentHome) {
+  try {
+    fs.unlinkSync(agentPaths(agentHome).v2PollerLock);
+  } catch { /* best-effort */ }
+}
+
+// ─── v2 outbox flush (§15.A) ──────────────────────────────────────────────────
+// Flush any pending background turn results to Telegram each poll cycle.
+
+export async function sendPendingV2Outbox({ agentHome, token, request, fetchImpl }) {
+  // §15.B: each poll cycle, if kill switch is on, stop all running turns.
+  if (agentHome && !checkSafety(agentHome).ok) {
+    await stopAllTurns();
+  }
+
+  const sent = [];
+  for (const entry of latestV2Outbox(agentHome).filter((e) => e.status === "queued")) {
+    let send_error = null;
+    try {
+      await sendTelegramMessage({
+        token,
+        request,
+        fetchImpl,
+        chatId: entry.chat_id,
+        text: String(entry.text || ""),
+      });
+      markV2OutboxSent(agentHome, entry.id);
+    } catch (error) {
+      send_error = error.message;
+    }
+    sent.push({ id: entry.id, sent: !send_error, send_error });
+  }
+  return sent;
 }
 
 export async function pollTelegramOnce({
@@ -154,17 +282,18 @@ export async function pollTelegramOnce({
     });
   }
   const gatewayReplies = await sendPendingTelegramOutbox({ agentHome, token, request, fetchImpl });
-  const replies = await sendPendingTelegramReplies({ agentHome, token, request, fetchImpl });
   const exchangeNotifications = await sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl });
   const dispatchNotifications = await sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl });
+  // §15.A: flush v2 background turn results. Also sweeps kill switch (§15.B).
+  const v2OutboxResults = await sendPendingV2Outbox({ agentHome, token, request, fetchImpl });
 
   return {
     updates: updates.length,
     handled,
     gateway_replies: gatewayReplies,
-    replies,
     exchange_notifications: exchangeNotifications,
     dispatch_notifications: dispatchNotifications,
+    v2_outbox: v2OutboxResults,
     next_offset: nextOffset,
   };
 }
@@ -284,30 +413,6 @@ function writeTelegramState(agentHome, state) {
   fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-async function sendPendingTelegramReplies({ agentHome, token, request, fetchImpl }) {
-  const replies = [];
-  for (const reply of listPendingChatReplies(agentHome, { channel: "telegram" })) {
-    let sent = false;
-    let send_error = null;
-    try {
-      await sendTelegramMessage({
-        token,
-        request,
-        fetchImpl,
-        chatId: reply.chat_id,
-        text: reply.text,
-        replyMarkup: reply.reply_markup,
-      });
-      markChatReplySent(agentHome, reply.id);
-      sent = true;
-    } catch (error) {
-      send_error = error.message;
-    }
-    replies.push({ id: reply.id, sent, send_error });
-  }
-  return replies;
-}
-
 function queueTelegramOutboxPayload(agentHome, updateId, payload) {
   const text = String(payload.text || "");
   if (!text.trim() || scanSecrets(text).length > 0) {
@@ -362,7 +467,7 @@ function latestTelegramOutbox(agentHome) {
   return Array.from(latest.values());
 }
 
-async function sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl }) {
+export async function sendPendingExchangeNotifications({ agentHome, token, request, fetchImpl }) {
   const policy = getTelegramCodexPolicy(agentHome);
   if (!policy.exchange_notify_enabled || !policy.exchange_notify_chat_id) {
     return [];
@@ -417,7 +522,7 @@ async function sendPendingExchangeNotifications({ agentHome, token, request, fet
   return sent;
 }
 
-async function sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl }) {
+export async function sendPendingDispatchNotifications({ agentHome, token, request, fetchImpl }) {
   const sent = [];
   for (const approval of listPendingDispatchNotifications(agentHome)) {
     let send_error = null;
@@ -537,10 +642,9 @@ function extractCallbackQuery(update) {
 }
 
 function handleTelegramCallback({ agentHome, callback }) {
-  const parsed = parseOwnerCallbackData(callback.data);
+  const parsed = parseTelegramCallbackData(callback.data);
   const policy = getTelegramCodexPolicy(agentHome);
-  const inboxLike = { user_id: String(callback.from.id) };
-  const allowedOwner = isOwner(inboxLike, policy);
+  const allowedOwner = isPolicyOwner(policy, callback.from.id);
   if (!parsed || !allowedOwner) {
     appendCallbackAudit({
       agentHome,
@@ -587,112 +691,36 @@ function handleTelegramCallback({ agentHome, callback }) {
       reason: "callback_missing_chat",
     };
   }
-  if (parsed.kind === "dispatch") {
-    let notice = parsed.action === "approve" ? "無法核准這個派工。" : "無法拒絕這個派工。";
-    let ok = false;
-    let replyMarkup = null;
-    try {
-      if (parsed.action === "approve") {
-        const result = approveDispatch({
-          agentHome,
-          id: parsed.dispatchId,
-          approvedBy: "owner",
-          defaultRepo: policy.default_repo,
-        });
-        notice = dispatchApproveNotice(result);
-        if (result.outcome?.type === "task") {
-          replyMarkup = ownerTaskReplyMarkup(result.outcome.id);
-        }
-      } else {
-        const result = rejectDispatch({ agentHome, id: parsed.dispatchId, rejectedBy: "owner" });
-        notice = dispatchRejectNotice(result.approval);
-      }
-      ok = true;
-    } catch {
-      // keep failure notice
+  let notice = parsed.action === "approve" ? "無法核准這個派工。" : "無法拒絕這個派工。";
+  let ok = false;
+  try {
+    if (parsed.action === "approve") {
+      const result = approveDispatch({
+        agentHome,
+        id: parsed.dispatchId,
+        approvedBy: "owner",
+        defaultRepo: policy.default_repo,
+      });
+      notice = dispatchApproveNotice(result);
+    } else {
+      const result = rejectDispatch({ agentHome, id: parsed.dispatchId, rejectedBy: "owner" });
+      notice = dispatchRejectNotice(result.approval);
     }
-    const chat = enqueueChatMessage({
-      agentHome,
-      channel: "telegram",
-      userId: String(callback.from.id),
-      chatId: String(chatId),
-      text: `dispatch-${parsed.action} ${parsed.dispatchId}`,
-    });
-    if (chat.allowed) {
-      queueChatReply({ agentHome, inboxId: chat.id, text: notice, source: "dispatch", replyMarkup });
-    }
-    return {
-      ok: chat.allowed && ok,
-      chat,
-      payload: {
-        method: "answerCallbackQuery",
-        body: {
-          callback_query_id: callback.id,
-          text: chat.allowed ? "Received." : "Access denied.",
-          show_alert: false,
-        },
-      },
-      reason: chat.allowed ? `dispatch_${parsed.action}` : "access_denied",
-    };
+    ok = true;
+  } catch {
+    // keep failure notice
   }
-  if (parsed.kind === "model") {
-    let notice = "無法更新模型設定。";
-    try {
-      if (parsed.agent === "claude") {
-        setTelegramCodexPolicy(agentHome, { exchange_runner_model: parsed.model === "default" ? "" : parsed.model });
-      } else {
-        setTelegramCodexPolicy(agentHome, { codex_runner_model: parsed.model === "default" ? "" : parsed.model });
-      }
-      notice = `已更新模型設定。\n${formatTelegramModelStatus(agentHome)}`;
-    } catch {
-      // keep failure notice
-    }
-    const chat = enqueueChatMessage({
-      agentHome,
-      channel: "telegram",
-      userId: String(callback.from.id),
-      chatId: String(chatId),
-      text: `model-${parsed.agent} ${parsed.model}`,
-    });
-    if (chat.allowed) {
-      queueChatReply({ agentHome, inboxId: chat.id, text: notice, source: "model_control" });
-    }
-    return {
-      ok: chat.allowed,
-      chat,
-      payload: {
-        method: "answerCallbackQuery",
-        body: {
-          callback_query_id: callback.id,
-          text: chat.allowed ? "Received." : "Access denied.",
-          show_alert: false,
-        },
-      },
-      reason: chat.allowed ? "model_callback" : "access_denied",
-    };
-  }
-
-  const chat = enqueueChatMessage({
-    agentHome,
-    channel: "telegram",
-    userId: String(callback.from.id),
-    chatId: String(chatId),
-    text: parsed.kind === "reply_approval"
-      ? `reply-${parsed.action} ${parsed.approvalId}`
-      : `${parsed.action} ${parsed.taskId}`,
-  });
   return {
-    ok: chat.allowed,
-    chat,
+    ok,
     payload: {
       method: "answerCallbackQuery",
       body: {
         callback_query_id: callback.id,
-        text: chat.allowed ? "Received." : "Access denied.",
+        text: notice,
         show_alert: false,
       },
     },
-    reason: chat.allowed ? "callback_queued" : "access_denied",
+    reason: `dispatch_${parsed.action}`,
   };
 }
 
@@ -703,79 +731,28 @@ function appendCallbackAudit({ agentHome, callback, parsed, allowed, ok, reason 
     command: "owner_callback",
     allowed,
     ok,
-    task_id: parsed?.taskId || null,
-    approval_id: parsed?.approvalId || null,
     dispatch_id: parsed?.dispatchId || null,
     reason,
     created_at: new Date().toISOString(),
   });
 }
 
-function parseOwnerCallbackData(data) {
-  const task = String(data || "").match(/^owner:(approve|reject|status):(task_[A-Za-z0-9_-]+)$/);
-  if (task) {
-    return { kind: "task", action: task[1], taskId: task[2] };
-  }
-  const reply = String(data || "").match(/^owner_reply:(approve|reject):(approval_[A-Za-z0-9_-]+)$/);
-  if (reply) {
-    return { kind: "reply_approval", action: reply[1], approvalId: reply[2] };
-  }
+function parseTelegramCallbackData(data) {
   const dispatch = String(data || "").match(/^dispatch:(approve|reject):(dispatch_[A-Za-z0-9_-]+)$/);
   if (dispatch) {
     return { kind: "dispatch", action: dispatch[1], dispatchId: dispatch[2] };
   }
-  const model = String(data || "").match(/^model:(claude|opus|codex):([A-Za-z0-9][A-Za-z0-9._:/-]*|default)$/);
-  if (model) {
-    return { kind: "model", agent: model[1] === "opus" ? "claude" : model[1], model: model[2] };
-  }
   return null;
-}
-
-function modelControlsMarkup() {
-  return {
-    inline_keyboard: [
-      [
-        { text: "Claude Default", callback_data: "model:claude:default" },
-        { text: "Sonnet 4.6", callback_data: "model:claude:sonnet" },
-        { text: "Opus 4.8", callback_data: "model:claude:opus" },
-      ],
-      [
-        { text: "Codex Default", callback_data: "model:codex:default" },
-        { text: "GPT-5.5", callback_data: "model:codex:gpt-5.5" },
-      ],
-      [
-        { text: "GPT-5.4", callback_data: "model:codex:gpt-5.4" },
-        { text: "GPT-5.4 mini", callback_data: "model:codex:gpt-5.4-mini" },
-      ],
-    ],
-  };
-}
-
-function formatTelegramModelStatus(agentHome) {
-  const policy = getTelegramCodexPolicy(agentHome);
-  const status = getSafetyStatus(agentHome);
-  const budget = status.config.daily_token_budget;
-  const budgetText = budget === Number.MAX_SAFE_INTEGER ? "disabled" : String(budget);
-  const remainingText = budget === Number.MAX_SAFE_INTEGER ? "n/a" : String(status.today.remaining_tokens);
-  return [
-    "Local accounting only; not official account usage.",
-    `claude_model=${policy.exchange_runner_model || "default"} (${claudeModelLabel(policy.exchange_runner_model)})`,
-    `codex_model=${policy.codex_runner_model || "default"}${policy.codex_runner_model ? "" : " (effective=gpt-5.5)"}`,
-    `local_tokens_today=${status.today.tokens}`,
-    `local_budget=${budgetText}`,
-    `local_remaining=${remainingText}`,
-  ].join("\n");
-}
-
-function claudeModelLabel(model) {
-  if (model === "sonnet") return "Sonnet 4.6";
-  if (model === "opus") return "Opus 4.8";
-  return "Claude Code default";
 }
 
 function isGatewayText(text, agentHome) {
   const trimmed = String(text || "").trim();
   return trimmed === "status" || trimmed.startsWith("agent ") || isGatewayShortcutText(trimmed, agentHome);
+}
+
+function isPolicyOwner(policy, userId) {
+  const id = String(userId || "");
+  return Array.isArray(policy.direct_send_user_allowlist) && policy.direct_send_user_allowlist.includes(id);
 }
 
 function isGatewayShortcutText(text, agentHome) {

@@ -27,6 +27,7 @@ try {
       'await import("./src/agent/orchestrator.js");',
       'await import("./src/agent/codex-runner.js");',
       'await import("./src/agent/exchange-runner.js");',
+      'await import("./src/agent/codex-exchange-runner.js");',
       'const { buildMemoryContextBlock } = await import("./src/agent/memory-adapter.js");',
       'try {',
       '  await buildMemoryContextBlock({ enabled: true, repo: process.cwd() });',
