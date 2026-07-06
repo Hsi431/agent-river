@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { appendJsonl, readJsonl } from "../lib/jsonl.js";
-import { shortHash } from "../lib/hash.js";
+import { sha256, shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 
 export function createTask({
@@ -75,6 +75,10 @@ export function createTask({
 
   writeTask(agentHome, task);
   return task;
+}
+
+export function taskApprovalHash(task) {
+  return sha256(`${task.repo}\n${task.mode}\n${task.request}`).slice(0, 8);
 }
 
 export function listTasks(agentHome) {

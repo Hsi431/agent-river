@@ -4,6 +4,7 @@ import { redactSecrets } from "../../lib/secret-scan.js";
 import { agentPaths } from "../paths.js";
 import { approveAgentRegistration, rejectAgentRegistration } from "../registry.js";
 import { getTelegramCodexPolicy } from "../safety.js";
+import { readTask, taskApprovalHash } from "../tasks.js";
 import { approveAgentTask, rejectAgentTask } from "../orchestrator.js";
 import {
   maybeHandleV2,
@@ -227,12 +228,25 @@ async function handleDashboardCallback({ agentHome, client, callback }) {
       });
       notice = result.text;
     } else {
-      const task = parsed.action === "approve"
-        ? approveAgentTask({ agentHome, id: parsed.taskId })
-        : rejectAgentTask({ agentHome, id: parsed.taskId });
-      notice = parsed.action === "approve"
-        ? `已放行 ${task.id}`
-        : `已拒絕 ${task.id}`;
+      if (parsed.action === "approve") {
+        const task = readTask(agentHome, parsed.taskId);
+        if (!task) {
+          throw new Error(`Task not found: ${parsed.taskId}`);
+        }
+        if (parsed.hash === null) {
+          notice = "舊版按鈕已失效,請重新產生核准請求";
+        } else if (parsed.hash !== taskApprovalHash(task)) {
+          notice = "task 內容已變更,請重新檢視";
+        } else if (task.approval === "approved") {
+          notice = "已處理過";
+        } else {
+          const approved = approveAgentTask({ agentHome, id: parsed.taskId });
+          notice = `已放行 ${approved.id}`;
+        }
+      } else {
+        const rejected = rejectAgentTask({ agentHome, id: parsed.taskId });
+        notice = `已拒絕 ${rejected.id}`;
+      }
     }
   } catch {
     if (parsed.kind === "join") {
@@ -272,9 +286,9 @@ async function answerSafe(client, { callbackQueryId, text }) {
 
 function parseDashboardCallback(data) {
   const raw = String(data || "");
-  const gate = raw.match(/^gate:(approve|reject):(task_[A-Za-z0-9_-]+)$/);
+  const gate = raw.match(/^gate:(approve|reject):(task_[A-Za-z0-9_-]+)(?::([a-f0-9]{8}))?$/);
   if (gate) {
-    return { kind: "gate", action: gate[1], taskId: gate[2] };
+    return { kind: "gate", action: gate[1], taskId: gate[2], hash: gate[3] || null };
   }
   const join = raw.match(/^join:(approve|reject):([a-z][a-z0-9_-]*)$/);
   if (join) {
