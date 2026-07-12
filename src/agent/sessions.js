@@ -89,6 +89,12 @@ export function listActiveSessions(agentHome, { now = Date.now() } = {}) {
   return active.sort((a, b) => String(a.opened_at || "").localeCompare(String(b.opened_at || "")));
 }
 
+export function listSessions(agentHome) {
+  return Array.from(foldSessions(agentHome).values())
+    .sort((a, b) => String(b.last_message_at || b.closed_at || b.opened_at || "")
+      .localeCompare(String(a.last_message_at || a.closed_at || a.opened_at || "")));
+}
+
 export function closeSession({ agentHome, id, reason = "ok", now = Date.now() } = {}) {
   const normalizedReason = normalizeCloseReason(reason);
   const session = foldSessions(agentHome).get(String(id || ""));
