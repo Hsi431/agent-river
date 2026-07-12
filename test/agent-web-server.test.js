@@ -122,7 +122,7 @@ test("agents separate registry and routing state, and safety reports lock files 
   const server = await startTestServer(t, agentHome);
 
   const agents = await request(server, "/agents");
-  assert.match(agents.body, /opus[\s\S]*?active[\s\S]*?routing disabled/);
+  assert.match(agents.body, /opus[\s\S]*?active[\s\S]*?dispatch route disabled/);
 
   const safety = await request(server, "/safety");
   for (const label of ["Opus runner lock file", "Codex runner lock file", "Exec runner lock file"]) {

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +15,11 @@ import {
   readWebStatus,
 } from "./read-model.js";
 import { renderPage } from "./render.js";
+import { handleWebAction, isWebActionPath } from "./actions.js";
 
 const BIND_ADDRESS = "127.0.0.1";
+const COOKIE_NAME = "agent_river_web";
+const BODY_LIMIT = 16 * 1024;
 const ASSET_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "assets");
 const SECURITY_HEADERS = {
   "cache-control": "no-store",
@@ -28,8 +32,9 @@ const SECURITY_HEADERS = {
 
 export function createWebServer({ agentHome } = {}) {
   if (!agentHome) throw new Error("Missing agentHome");
+  const actionSecurity = createWebActionSecurity();
   return http.createServer((request, response) => {
-    void handleRequest({ agentHome, request, response });
+    void handleRequest({ agentHome, actionSecurity, request, response });
   });
 }
 
@@ -49,13 +54,9 @@ export async function startWebServer({ agentHome, port = 4310 } = {}) {
   return server;
 }
 
-async function handleRequest({ agentHome, request, response }) {
+async function handleRequest({ agentHome, actionSecurity, request, response }) {
   try {
     if (!isAllowedHost(request.headers.host, request.socket.localPort)) return sendText(response, 421, "Misdirected Request");
-    if (request.method !== "GET") {
-      response.setHeader("allow", "GET");
-      return sendText(response, 405, "Method Not Allowed");
-    }
     let url;
     try {
       url = new URL(request.url || "/", `http://${request.headers.host}`);
@@ -63,12 +64,34 @@ async function handleRequest({ agentHome, request, response }) {
     } catch {
       return sendText(response, 400, "Bad Request");
     }
+    if (request.method === "POST") {
+      if (!isWebActionPath(url.pathname)) {
+        response.setHeader("allow", "GET");
+        return sendText(response, 405, "Method Not Allowed");
+      }
+      const expectedOrigin = `http://${request.headers.host}`;
+      const authorized = actionSecurity.authorize(request, expectedOrigin);
+      if (!authorized.ok) return sendJson(response, 403, { error: authorized.error });
+      let body;
+      try {
+        body = await readJsonActionBody(request);
+      } catch (error) {
+        return sendJson(response, error.status || 400, { error: error.code || "invalid_request" });
+      }
+      const result = await handleWebAction({ agentHome, pathname: url.pathname, body });
+      return sendJson(response, result.status, result.value);
+    }
+    if (request.method !== "GET") {
+      response.setHeader("allow", "GET, POST");
+      return sendText(response, 405, "Method Not Allowed");
+    }
     const asset = assetRoute(url.pathname);
     if (asset) return sendAsset(response, asset);
     if (url.pathname.startsWith("/api/")) return sendApi({ agentHome, pathname: url.pathname, response });
     const page = pageData(agentHome, url.pathname);
     if (!page) return sendText(response, 404, "Not Found");
-    return send(response, 200, renderPage(page), "text/html; charset=utf-8");
+    response.setHeader("set-cookie", actionSecurity.cookie);
+    return send(response, 200, renderPage({ ...page, csrfToken: actionSecurity.csrfToken }), "text/html; charset=utf-8");
   } catch {
     return sendText(response, 500, "Internal Server Error");
   }
@@ -144,6 +167,68 @@ function isAllowedHost(host, localPort) {
   const value = String(host || "");
   const port = String(localPort || "");
   return Boolean(port) && (value === `127.0.0.1:${port}` || value === `localhost:${port}`);
+}
+
+function createWebActionSecurity() {
+  const secret = crypto.randomBytes(32);
+  const session = crypto.randomBytes(24).toString("base64url");
+  const signature = sign(secret, `cookie:${session}`);
+  return {
+    csrfToken: sign(secret, `csrf:${session}`),
+    cookie: `${COOKIE_NAME}=${session}.${signature}; HttpOnly; SameSite=Strict; Path=/`,
+    authorize(request, expectedOrigin) {
+      if (request.headers.origin !== expectedOrigin) return { ok: false, error: "invalid_origin" };
+      const value = readCookie(request.headers.cookie, COOKIE_NAME);
+      const separator = value.lastIndexOf(".");
+      if (separator < 1) return { ok: false, error: "invalid_session" };
+      const candidateSession = value.slice(0, separator);
+      if (!safeEqual(value.slice(separator + 1), sign(secret, `cookie:${candidateSession}`))) return { ok: false, error: "invalid_session" };
+      if (!safeEqual(request.headers["x-csrf-token"], sign(secret, `csrf:${candidateSession}`))) return { ok: false, error: "invalid_csrf" };
+      return { ok: true };
+    },
+  };
+}
+
+async function readJsonActionBody(request) {
+  if (String(request.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    throw httpError(415, "json_content_type_required");
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > BODY_LIMIT) throw httpError(413, "body_too_large");
+    chunks.push(chunk);
+  }
+  try {
+    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    return value;
+  } catch {
+    throw httpError(400, "invalid_json");
+  }
+}
+
+function readCookie(header, name) {
+  for (const part of String(header || "").split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=");
+  }
+  return "";
+}
+
+function sign(secret, value) {
+  return crypto.createHmac("sha256", secret).update(value).digest("base64url");
+}
+
+function safeEqual(left, right) {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function httpError(status, code) {
+  return Object.assign(new Error(code), { status, code });
 }
 
 function sendJson(response, status, value) {

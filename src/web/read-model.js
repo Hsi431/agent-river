@@ -179,6 +179,7 @@ export function listWebAgents(agentHome, { now = Date.now() } = {}) {
       style: agent?.style || null,
       capabilities: agent?.capabilities || [],
       status: agent?.status || null,
+      routingConfigured: name === primary ? true : configured.has(name),
       routingEnabled: name === primary ? true : route?.enabled ?? null,
       primary: name === primary,
       runnerStatus: null,

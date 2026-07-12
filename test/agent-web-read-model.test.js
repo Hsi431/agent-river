@@ -122,6 +122,7 @@ test("web read model normalizes existing mailbox, dispatch, session, and registr
   assert.equal(sessions[0].transcriptPath, null);
   assert.deepEqual(new Set(detail.timeline.map((row) => row.type)), new Set(["session_opened", "message", "reply", "session_closed"]));
   assert.equal(agents.find((agent) => agent.name === "opus").routingEnabled, true);
+  assert.equal(agents.find((agent) => agent.name === "opus").routingConfigured, true);
   assert.equal(agents.find((agent) => agent.name === "opus").runnerStatus, null);
   assert.equal(typeof agents.find((agent) => agent.name === "opus").eligibleWorkCount, "number");
   assert.equal(safety.ownerAllowlist.telegramCount, 1);
