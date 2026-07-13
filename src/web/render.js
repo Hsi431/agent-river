@@ -6,10 +6,11 @@ const NAV = [
 export function renderPage({ view, title, data, csrfToken }) {
   const main = renderView(view, data);
   const context = renderContext(view, data);
+  const autoRefresh = view === "inbox-detail" || view === "session-detail" ? " data-auto-refresh=\"5000\"" : "";
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="${escapeHtml(csrfToken || "")}"><title>${escapeHtml(title)} · Agent River</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/app.js" defer></script></head>
-<body><div class="shell"><aside class="sidebar"><a class="brand" href="/"><span>AR</span><b>Agent River</b></a>
+<body${autoRefresh}><div class="shell"><aside class="sidebar"><a class="brand" href="/"><span>AR</span><b>Agent River</b></a>
 <a class="compose" href="/compose">＋ New request</a><nav>${NAV.map(([href, label]) => `<a href="${href}"${activeNav(view, href) ? " class=\"active\"" : ""}>${label}</a>`).join("")}</nav>
 <footer>Local control plane<br><span>127.0.0.1 only</span></footer></aside>
 <main><header><div><p class="eyebrow">Agent post office</p><h1>${escapeHtml(title)}</h1></div><span class="local-badge">LOCAL</span></header><div class="action-message" role="status" hidden></div>${main}</main>

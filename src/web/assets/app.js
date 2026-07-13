@@ -2,6 +2,16 @@ document.documentElement.dataset.agentRiver = "web";
 
 const token = document.querySelector('meta[name="csrf-token"]')?.content || "";
 const message = document.querySelector(".action-message");
+const autoRefreshMs = Number(document.body.dataset.autoRefresh) || 0;
+let formDirty = false;
+
+if (autoRefreshMs > 0) {
+  document.addEventListener("input", markFormDirty);
+  document.addEventListener("change", markFormDirty);
+  window.setInterval(() => {
+    if (!formDirty && !focusedFormControl()) window.location.reload();
+  }, autoRefreshMs);
+}
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest(".action-button");
@@ -68,6 +78,15 @@ function formValues(form) {
   }
   if (form.action.endsWith("/api/sessions") && !Object.hasOwn(values, "participants")) values.participants = [];
   return values;
+}
+
+function markFormDirty(event) {
+  if (event.target.matches("input, textarea, select") && event.target.closest("form")) formDirty = true;
+}
+
+function focusedFormControl() {
+  const control = document.activeElement;
+  return Boolean(control?.matches("input, textarea, select, button") && control.closest("form"));
 }
 
 function show(text, failed) {

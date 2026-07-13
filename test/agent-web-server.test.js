@@ -99,7 +99,7 @@ test("web server covers every read-only page and API route", async (t) => {
     assert.match(response.headers["content-type"], /^text\/html/, route);
   }
   const apiRoutes = [
-    "/api/status", "/api/inbox", `/api/inbox/${message.id}`, "/api/dispatch",
+    "/api/status", "/api/request-options", "/api/inbox", `/api/inbox/${message.id}`, "/api/dispatch",
     "/api/sessions", `/api/sessions/${session.session_id}`, "/api/agents", "/api/safety", "/api/archive",
   ];
   for (const route of apiRoutes) {
@@ -108,6 +108,16 @@ test("web server covers every read-only page and API route", async (t) => {
     assert.match(response.headers["content-type"], /^application\/json/, route);
     assert.doesNotThrow(() => JSON.parse(response.body), route);
   }
+
+  const requestOptions = JSON.parse((await request(server, "/api/request-options")).body);
+  assert.deepEqual(requestOptions.targets.map((target) => target.name), ["codex", "opus"]);
+  assert.deepEqual(requestOptions.sessionParticipants.map((target) => target.name), ["codex", "opus"]);
+
+  assert.match((await request(server, `/inbox/${message.id}`)).body, /<body data-auto-refresh="5000">/);
+  assert.match((await request(server, `/sessions/${session.session_id}`)).body, /<body data-auto-refresh="5000">/);
+  assert.doesNotMatch((await request(server, "/inbox")).body, /data-auto-refresh/);
+  const app = await request(server, "/assets/app.js");
+  assert.match(app.body, /!formDirty && !focusedFormControl\(\)/);
 });
 
 test("agents separate registry and routing state, and safety reports lock files only", async (t) => {

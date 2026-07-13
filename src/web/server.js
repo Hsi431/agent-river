@@ -129,6 +129,10 @@ function pageData(agentHome, readOptions, pathname) {
 function sendApi({ agentHome, readOptions, pathname, response }) {
   let data;
   if (pathname === "/api/status") data = readWebStatus(agentHome, readOptions);
+  else if (pathname === "/api/request-options") data = {
+    targets: listWebRequestTargets(agentHome),
+    sessionParticipants: listWebSessionParticipants(agentHome),
+  };
   else if (pathname === "/api/inbox") data = listInboxItems(agentHome);
   else if (pathname === "/api/dispatch") data = listDispatchItems(agentHome);
   else if (pathname === "/api/sessions") data = listWebSessions(agentHome);
