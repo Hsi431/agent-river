@@ -4,8 +4,9 @@ import { shortHash } from "../lib/hash.js";
 import { agentPaths } from "./paths.js";
 import { approveAgentTask, getAgentStatus, rejectAgentTask, runAgentOnce, submitAgentTask } from "./orchestrator.js";
 import { realPlanRunner } from "./codex-runner.js";
-import { getExchangeThread, listExchangeInbox, listExchangeReplies, submitExchangeMessage } from "./exchange.js";
-import { getPrimaryAgentId, getTelegramCodexPolicy, isExchangeAgentEnabled, isGatewayUserAllowed, setTelegramCodexPolicy } from "./safety.js";
+import { getExchangeThread, listExchangeInbox, listExchangeReplies } from "./exchange.js";
+import { getTelegramCodexPolicy, isGatewayUserAllowed, setTelegramCodexPolicy } from "./safety.js";
+import { submitOwnerMailboxMessage } from "./owner-mailbox.js";
 import { runExchangeRunnerOnce, runnerReadiness } from "./exchange-runner.js";
 
 // Fire-and-forget: start the runner in the background without blocking the
@@ -212,18 +213,18 @@ async function executeGatewayCommand({ agentHome, parsed, userId, chatId, memory
       };
     }
     case "exchange_ask": {
-      if (!isExchangeAgentEnabled(agentHome, parsed.args.agent)) {
-        return { ok: false, reply: `Exchange agent is not enabled: ${parsed.args.agent}` };
-      }
-      const message = submitExchangeMessage({
+      const submitted = submitOwnerMailboxMessage({
         agentHome,
-        from: getPrimaryAgentId(agentHome),
         to: parsed.args.agent,
+        text: parsed.args.text,
         channel: "telegram",
         threadId: parsed.args.threadId,
         chatId,
-        text: parsed.args.text,
       });
+      if (!submitted.ok) {
+        return { ok: false, reply: `Exchange agent is not enabled: ${parsed.args.agent}` };
+      }
+      const message = submitted.message;
       if (parsed.args.agent !== "opus") {
         return { ok: true, reply: `Sent exchange message ${message.id} to ${message.to}.` };
       }
