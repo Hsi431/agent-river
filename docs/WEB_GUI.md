@@ -42,6 +42,8 @@ There is no option to bind the v1 server to a LAN or wildcard address.
 
 The layout is dense and review-oriented rather than chat-first. Unsupported controls are omitted instead of being represented with invented backend data.
 
+Inbox and session detail pages refresh their current record every five seconds. Auto-refresh pauses while a form is focused or contains unsent changes so in-progress input is not replaced.
+
 ## New request workflows
 
 `/compose` exposes two distinct queueing paths:
@@ -61,6 +63,7 @@ Read endpoints:
 
 ```text
 GET /api/status
+GET /api/request-options
 GET /api/inbox
 GET /api/inbox/:id
 GET /api/dispatch
