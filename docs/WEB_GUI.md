@@ -30,6 +30,7 @@ There is no option to bind the v1 server to a LAN or wildcard address.
 | Page | Purpose |
 | --- | --- |
 | `/` | Dashboard counts and safety warnings backed by current state. |
+| `/compose` | Submit a direct agent request or open a read-only multi-agent session. |
 | `/inbox` | Exchange messages and replies, dispatch requests, tasks/results, and persisted runner alerts. |
 | `/inbox/:id` | One normalized record, its relationships, source ledger path, and redacted raw JSON. |
 | `/dispatch` | Folded dispatch approvals with actions only while an approval is pending. |
@@ -40,6 +41,19 @@ There is no option to bind the v1 server to a LAN or wildcard address.
 | `/archive` | A read-only projection of terminal records; it is not persistent archive metadata. |
 
 The layout is dense and review-oriented rather than chat-first. Unsupported controls are omitted instead of being represented with invented backend data.
+
+## New request workflows
+
+`/compose` exposes two distinct queueing paths:
+
+- **Direct request** writes one canonical Web mailbox envelope to one eligible direct route. Fields are target, required request text, optional subject (up to 120 characters), and optional repository. The primary Codex route and eligible enabled agent routes are offered. Agent River requests a wake-up from a managed runner when available, but submission only means the item was queued; it does not mean the agent completed it.
+- **Multi-agent session** opens an owner-initiated session with at least two participants, a 5–500 character topic, an optional repository, and optional positive-integer message and minute budgets. Defaults are 10 messages and 30 minutes. Session eligibility follows the existing session domain policy: the primary agent, enabled exchange routes, and active registered agents can participate, even when an active registered agent is not a direct-request route.
+
+Session creation calls the existing `openSession` path and then the existing kickoff path. The topic is queued once to every participant with the session ID and resolved repository. Owner kickoff messages do not consume the session message budget; agent replies do. The Web workflow never supplies session write access, so sessions opened in the browser have an empty `write_access` list.
+
+An active `/sessions/:id` page includes an owner-instruction form. It broadcasts one canonical `session-say` message to every participant and then reloads the audit view. This is the same domain operation used by Telegram `/say`; owner follow-ups do not consume the agent-reply budget. Closed, killed, exhausted, or unknown sessions reject follow-ups.
+
+Repository values are optional. When supplied, both workflows use the existing repo resolver and policy: the target must resolve to a Git worktree within the configured workspace root, and the canonical repository top level is stored. Omitting the field leaves the envelope or session unbound; the Web layer does not invent a repository or grant write capability.
 
 ## JSON API
 
@@ -60,6 +74,9 @@ GET /api/archive
 Safety-gated action endpoints:
 
 ```text
+POST /api/requests
+POST /api/sessions
+POST /api/sessions/:id/messages
 POST /api/dispatch/:id/approve
 POST /api/dispatch/:id/reject
 POST /api/sessions/:id/kill
@@ -68,7 +85,9 @@ POST /api/agents/:name/disable
 POST /api/stop
 ```
 
-Browser actions require a confirmation dialog and the server's confirmation value. Dispatch approve/reject calls the existing dispatch domain functions. Session kill calls the existing session function. Agent actions change an eligible existing dispatch route; they do not approve a pending registry join or issue an agent token.
+All mutations use the browser security boundary described below. Direct requests, session creation, and session follow-ups submit without an extra confirmation dialog. Dangerous or state-transition controls require the server's matching confirmation value. Dispatch approve/reject calls the existing dispatch domain functions. Session kill calls the existing session function. Agent actions change an eligible existing dispatch route; they do not approve a pending registry join or issue an agent token.
+
+The request and session endpoints reject unknown fields before calling domain mutations. They do not accept a write mode, write-access list, agent identity override, or arbitrary command. They enqueue existing mailbox/session records and do not bypass dispatch approval, task execution approval, kill-switch checks, secret redaction, budgets, agent registration, or runner policy.
 
 Approving a dispatch does not approve its eventual file edits. A dispatch to the primary Codex agent creates a task whose execution approval remains `pending`, preserving the separate execution safety gate.
 
@@ -101,7 +120,7 @@ Browser mutations have an additional loopback CSRF boundary:
 - the server accepts only the exact `127.0.0.1` or `localhost` Host with its actual port;
 - HTML receives a signed, process-lifetime session cookie with `HttpOnly` and `SameSite=Strict`;
 - a signed CSRF value is supplied separately to the same-origin client script;
-- actions require an exact same-origin `Origin`, the signed cookie, the CSRF value, JSON content type, a bounded request body, and an explicit confirmation value;
+- actions require an exact same-origin `Origin`, the signed cookie, the CSRF value, JSON content type, and a bounded request body; dangerous controls additionally require an explicit confirmation value;
 - state-changing `GET` requests are not supported;
 - responses use a restrictive Content Security Policy and do not enable permissive CORS.
 
