@@ -25,8 +25,9 @@ import {
 
 test("web read model normalizes existing mailbox, dispatch, session, and registry state", async () => {
   const agentHome = makeAgentHome();
+  const now = Date.now();
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
-  seedSpawnAgents({ agentHome, now: new Date("2026-07-13T00:00:00.000Z") });
+  seedSpawnAgents({ agentHome, now: new Date(now) });
   setTelegramCodexPolicy(agentHome, {
     direct_send_user_add: "owner-123",
     workspace_root: "/workspace",
@@ -40,7 +41,7 @@ test("web read model normalizes existing mailbox, dispatch, session, and registr
     topic: "Review the truthful web read model.",
     budgetMessages: 5,
     budgetMinutes: 30,
-    now: Date.parse("2026-07-13T00:01:00.000Z"),
+    now,
   });
   const message = submitExchangeMessage({
     agentHome,
@@ -51,7 +52,7 @@ test("web read model normalizes existing mailbox, dispatch, session, and registr
   });
   claimExchangeMessage({ agentHome, id: message.id, agent: "opus" });
   replyExchangeMessage({ agentHome, id: message.id, agent: "opus", text: "The projection is grounded in persisted state." });
-  closeSession({ agentHome, id: session.session_id, now: Date.parse("2026-07-13T00:05:00.000Z") });
+  closeSession({ agentHome, id: session.session_id, now: now + 4_000 });
   const { approval } = createDispatchApproval({
     agentHome,
     proposedBy: "codex",
@@ -62,9 +63,9 @@ test("web read model normalizes existing mailbox, dispatch, session, and registr
       suggested_mode: "plan",
     },
     parentMsgId: message.id,
-    now: Date.parse("2026-07-13T00:03:00.000Z"),
+    now: now + 2_000,
   });
-  rejectDispatch({ agentHome, id: approval.id, now: Date.parse("2026-07-13T00:04:00.000Z") });
+  rejectDispatch({ agentHome, id: approval.id, now: now + 3_000 });
   const { approval: taskApproval } = createDispatchApproval({
     agentHome,
     proposedBy: "opus",
@@ -74,13 +75,13 @@ test("web read model normalizes existing mailbox, dispatch, session, and registr
       reason: "Owner requested a durable result",
       suggested_mode: "plan",
     },
-    now: Date.parse("2026-07-13T00:06:00.000Z"),
+    now: now + 5_000,
   });
   const approved = approveDispatch({
     agentHome,
     id: taskApproval.id,
     defaultRepo: "/workspace/repo",
-    now: Date.parse("2026-07-13T00:07:00.000Z"),
+    now: now + 6_000,
   });
   const completedTask = JSON.parse(fs.readFileSync(path.join(agentPaths(agentHome).tasksDir, `${approved.outcome.id}.json`), "utf8"));
   transitionTask(agentHome, completedTask, "done", "Task completed.", {
