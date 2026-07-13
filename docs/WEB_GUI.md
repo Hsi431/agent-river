@@ -44,6 +44,20 @@ The layout is dense and review-oriented rather than chat-first. Unsupported cont
 
 Inbox and session detail pages refresh their current record every five seconds. Auto-refresh pauses while a form is focused or contains unsent changes so in-progress input is not replaced.
 
+## Language and layout stability
+
+The server-rendered interface supports English (`en`) and Traditional Chinese (`zh-Hant`). Locale detection uses this priority:
+
+1. a supported `agent_river_locale` cookie;
+2. a supported browser `Accept-Language` preference;
+3. English.
+
+The header language switch returns to the current local page and stores the selection for one year. Its cookie is `HttpOnly`, `SameSite=Strict`, scoped to `/`, and contains only the normalized locale. Unsupported selections normalize to English, and the redirect target is restricted to a local path.
+
+Navigation, page titles, forms, action labels, empty states, known status labels, and client-side confirmation, progress, completion, and fallback messages are translated. Operational content is not rewritten: agent/model text, IDs, repository and ledger paths, timestamps, unknown enum values, canonical status and action tokens, CSS classes, and redacted raw JSON remain unchanged. Backend-provided `message`, `error`, and `limitation` text and HTTP status codes are displayed verbatim.
+
+The root page reserves a stable vertical scrollbar gutter. This keeps the fixed side columns and flexible center column aligned when moving between short pages and pages that require scrolling.
+
 ## New request workflows
 
 `/compose` exposes two distinct queueing paths:
