@@ -32,15 +32,24 @@ function renderView(view, data) {
 
 function compose(data) {
   const targets = Array.isArray(data.targets) ? data.targets : [];
-  if (!targets.length) return `<section class="panel">${empty("No eligible agent routes are available.")}</section>`;
+  const sessionParticipants = Array.isArray(data.sessionParticipants) ? data.sessionParticipants : [];
   const options = targets.map((target) => `<option value="${escapeHtml(target.name)}">${escapeHtml(joinMeta(target.name, target.style, target.primary ? "primary" : target.kind))}</option>`).join("");
-  return `<section class="panel compose-panel"><form class="request-form" action="/api/requests" method="post">
+  const participants = sessionParticipants.map((target) => `<label class="participant"><input type="checkbox" name="participants" value="${escapeHtml(target.name)}"><span>${escapeHtml(joinMeta(target.name, target.style, target.primary ? "primary" : target.kind))}</span></label>`).join("");
+  const direct = targets.length ? `<form class="request-form" action="/api/requests" method="post" data-success="inbox">
     <label>Target agent<select name="target" required>${options}</select></label>
     <label>Subject <span>optional, 120 characters max</span><input name="subject" maxlength="120" autocomplete="off"></label>
     <label>Request<textarea name="request" rows="10" required></textarea></label>
     <label>Repository <span>optional, name or absolute path inside the configured workspace</span><input name="repo" autocomplete="off" spellcheck="false"></label>
     <button type="submit">Send request</button>
-  </form></section>`;
+  </form>` : empty("No eligible direct request routes are available.");
+  const session = sessionParticipants.length >= 2 ? `<form class="request-form" action="/api/sessions" method="post" data-success="session">
+    <fieldset><legend>Participants <span>select at least two eligible agents</span></legend><div class="participant-grid">${participants}</div></fieldset>
+    <label>Topic <span>5–500 characters</span><textarea name="topic" minlength="5" maxlength="500" rows="6" required></textarea></label>
+    <label>Repository <span>optional, resolved through the configured workspace policy</span><input name="repo" autocomplete="off" spellcheck="false"></label>
+    <div class="budget-fields"><label>Message budget <span>default 10</span><input name="budgetMessages" type="number" min="1" step="1" inputmode="numeric"></label><label>Minute budget <span>default 30</span><input name="budgetMinutes" type="number" min="1" step="1" inputmode="numeric"></label></div>
+    <button type="submit">Open session</button>
+  </form>` : empty("At least two eligible session participants are required.");
+  return `<div class="compose-modes"><section class="panel compose-panel"><div class="compose-heading"><p class="eyebrow">Direct request</p><h2>One agent, one mailbox item</h2></div>${direct}</section><section class="panel compose-panel"><div class="compose-heading"><p class="eyebrow">Multi-agent session</p><h2>Open a budgeted working session</h2></div>${session}</section></div>`;
 }
 
 function dashboard(data) {
@@ -118,7 +127,7 @@ function sessionDetail(item) {
   return `<section class="panel detail"><div class="row-title"><h2>${escapeHtml(item.topic || item.id)}</h2>${status(item.status)}</div><div class="facts">${[
     ["Session", item.id], ["Agents", item.agents?.join(", ")], ["Repo", item.repo], ["Messages", item.messageCount],
     ["Started", item.startedAt], ["Last activity", item.lastActivity], ["Transcript", item.transcriptPath],
-  ].map(([label, value]) => fact(label, value)).join("")}</div>${item.status === "active" ? `<div class="detail-actions">${actionButton("Kill session", `/api/sessions/${encodeURIComponent(item.id)}/kill`, "kill", true)}</div>` : ""}</section><section class="panel timeline"><h2>Audit timeline</h2>${item.timeline?.length ? item.timeline.map(timelineRow).join("") : empty("No transcript events.")}</section>${rawDetails(item.raw)}`;
+  ].map(([label, value]) => fact(label, value)).join("")}</div>${item.status === "active" ? `<form class="request-form session-message-form" action="/api/sessions/${encodeURIComponent(item.id)}/messages" method="post" data-success="reload"><label>Owner instruction <span>broadcast once to every participant</span><textarea name="message" rows="4" required></textarea></label><button type="submit">Send instruction</button></form><div class="detail-actions">${actionButton("Kill session", `/api/sessions/${encodeURIComponent(item.id)}/kill`, "kill", true)}</div>` : ""}</section><section class="panel timeline"><h2>Audit timeline</h2>${item.timeline?.length ? item.timeline.map(timelineRow).join("") : empty("No transcript events.")}</section>${rawDetails(item.raw)}`;
 }
 
 function timelineRow(row) {
@@ -128,7 +137,7 @@ function timelineRow(row) {
 function renderContext(view, data) {
   if (Array.isArray(data)) return `${fact("Visible records", data.length)}${fact("View", view)}`;
   if (view === "dashboard") return `${fact("System", data.system)}${fact("Warnings", data.warnings?.length || 0)}`;
-  if (view === "compose") return `${fact("Eligible targets", data.targets?.length || 0)}${fact("Channel", "web")}`;
+  if (view === "compose") return `${fact("Direct targets", data.targets?.length || 0)}${fact("Session participants", data.sessionParticipants?.length || 0)}${fact("Channel", "web")}`;
   return `${fact("Record", data.id || data.sessionId || view)}${fact("Status", data.status || "current")}${data.rawPath ? fact("Source", data.rawPath) : ""}`;
 }
 

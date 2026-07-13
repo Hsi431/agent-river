@@ -11,6 +11,7 @@ import {
   listInboxItems,
   listWebAgents,
   listWebRequestTargets,
+  listWebSessionParticipants,
   listWebSessions,
   readWebSafety,
   readWebStatus,
@@ -101,7 +102,11 @@ async function handleRequest({ agentHome, actionSecurity, readOptions, request, 
 
 function pageData(agentHome, readOptions, pathname) {
   if (pathname === "/") return { view: "dashboard", title: "Dashboard", data: readWebStatus(agentHome, readOptions) };
-  if (pathname === "/compose") return { view: "compose", title: "New request", data: { targets: listWebRequestTargets(agentHome) } };
+  if (pathname === "/compose") return {
+    view: "compose",
+    title: "New request",
+    data: { targets: listWebRequestTargets(agentHome), sessionParticipants: listWebSessionParticipants(agentHome) },
+  };
   if (pathname === "/inbox") return { view: "inbox", title: "Inbox", data: listInboxItems(agentHome) };
   if (pathname === "/dispatch") return { view: "dispatch", title: "Dispatch Gate", data: listDispatchItems(agentHome) };
   if (pathname === "/sessions") return { view: "sessions", title: "Sessions", data: listWebSessions(agentHome) };

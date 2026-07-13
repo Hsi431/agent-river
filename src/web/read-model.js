@@ -3,7 +3,7 @@ import path from "node:path";
 import { listDispatchApprovals } from "../agent/dispatch.js";
 import { agentPaths } from "../agent/paths.js";
 import { listRegisteredAgents } from "../agent/registry.js";
-import { listSessions } from "../agent/sessions.js";
+import { listSessions, sessionParticipantAllowlist } from "../agent/sessions.js";
 import { checkSafety, getSafetyStatus } from "../agent/safety.js";
 import { codexRunnerServiceStatus, dashboardServiceStatus, execRunnerServiceStatus, opusRunnerServiceStatus, webServiceStatus } from "../agent/service.js";
 import { readJsonl } from "../lib/jsonl.js";
@@ -198,6 +198,13 @@ export function listWebAgents(agentHome, { now = Date.now() } = {}) {
 export function listWebRequestTargets(agentHome) {
   return listWebAgents(agentHome)
     .filter((agent) => isOwnerMailboxTargetEligible(agentHome, agent.name, { allowPrimary: true, requireActiveTarget: true }))
+    .map((agent) => ({ name: agent.name, kind: agent.kind, style: agent.style, primary: agent.primary }));
+}
+
+export function listWebSessionParticipants(agentHome) {
+  const allowed = sessionParticipantAllowlist(agentHome);
+  return listWebAgents(agentHome)
+    .filter((agent) => allowed.has(agent.name))
     .map((agent) => ({ name: agent.name, kind: agent.kind, style: agent.style, primary: agent.primary }));
 }
 

@@ -3,7 +3,7 @@ import { redactSecrets } from "../../lib/secret-scan.js";
 import { listRegisteredAgents } from "../registry.js";
 import { getTelegramCodexPolicy, setTelegramCodexPolicy } from "../safety.js";
 import { getSession, killSession, listActiveSessions, openSession } from "../sessions.js";
-import { kickoffSession, submitExchangeMessage } from "../exchange.js";
+import { broadcastOwnerSessionMessage, kickoffSession } from "../exchange.js";
 import { resolveAnySessionId, submitSessionEditTask } from "./session-task.js";
 
 const DASHBOARD_HINT = "這是 v3 看板,指令:/session /say /task /sessions /kill /agents /model";
@@ -195,22 +195,8 @@ function handleSayCommand(agentHome, raw) {
     return "session 已收場";
   }
   const text = match[2].trim();
-  let current = session;
-  let sent = 0;
-  for (const target of session.participants) {
-    submitExchangeMessage({
-      agentHome,
-      from: "owner",
-      to: target,
-      channel: "session-say",
-      sessionId: session.session_id,
-      repo: session.repo || null,
-      text,
-    });
-    sent += 1;
-    current = getSession(agentHome, session.session_id) || current;
-  }
-  return `session #${shortSession(session.session_id)} 已插話 ${sent} 封,剩餘 ${Math.max(0, current.budget.max_messages - current.messages_used)}/${current.budget.max_messages}`;
+  const broadcast = broadcastOwnerSessionMessage({ agentHome, sessionId: session.session_id, text });
+  return `session #${shortSession(session.session_id)} 已插話 ${broadcast.sent} 封,剩餘 ${Math.max(0, broadcast.session.budget.max_messages - broadcast.session.messages_used)}/${broadcast.session.budget.max_messages}`;
 }
 
 function describeSessionError(error) {

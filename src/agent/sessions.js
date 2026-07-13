@@ -31,7 +31,7 @@ export async function openSession({
     throw new Error("Missing agentHome");
   }
   const normalizedInitiator = normalizeInitiator(initiator);
-  const allowed = dispatchTargetAllowlist(agentHome);
+  const allowed = sessionParticipantAllowlist(agentHome);
   const names = normalizeParticipants(participants);
   if (normalizedInitiator.startsWith("agent:")) {
     names.add(normalizedInitiator.slice("agent:".length));
@@ -199,7 +199,7 @@ function foldSessions(agentHome) {
   return foldSessionEvents(readJsonl(agentPaths(agentHome).sessions));
 }
 
-function dispatchTargetAllowlist(agentHome) {
+export function sessionParticipantAllowlist(agentHome) {
   const config = readAgentConfig(agentHome);
   const targets = new Set([getPrimaryAgentId(agentHome)]);
   for (const agent of config.exchange_agents || []) {

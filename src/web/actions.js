@@ -2,14 +2,17 @@ import { approveDispatch, rejectDispatch } from "../agent/dispatch.js";
 import { runCodexExchangeRunnerOnce } from "../agent/codex-exchange-runner.js";
 import { runExchangeRunnerOnce } from "../agent/exchange-runner.js";
 import { runExecRunnerOnce } from "../agent/exec-runner.js";
+import { broadcastOwnerSessionMessage, kickoffSession } from "../agent/exchange.js";
 import { submitOwnerMailboxMessage } from "../agent/owner-mailbox.js";
 import { getRegisteredAgent } from "../agent/registry.js";
 import { getPrimaryAgentId, getTelegramCodexPolicy, disableExchangeAgent, enableExchangeAgent, readAgentConfig, setKillSwitch } from "../agent/safety.js";
-import { killSession } from "../agent/sessions.js";
+import { killSession, openSession } from "../agent/sessions.js";
 import { stopAllTurns } from "../agent/v2/kill.js";
 import { resolveRepo } from "../agent/v2/repo-resolver.js";
 
 const REQUEST_FIELDS = new Set(["target", "subject", "request", "repo"]);
+const SESSION_FIELDS = new Set(["participants", "topic", "repo", "budgetMessages", "budgetMinutes"]);
+const SESSION_MESSAGE_FIELDS = new Set(["message"]);
 
 export async function handleWebAction({ agentHome, pathname, body, repoDir = process.cwd(), runnerNudge = requestManagedRunnerNudge }) {
   const route = actionRoute(pathname);
@@ -18,6 +21,12 @@ export async function handleWebAction({ agentHome, pathname, body, repoDir = pro
   try {
     if (route.kind === "request") {
       return submitWebRequest({ agentHome, body, repoDir, runnerNudge });
+    }
+    if (route.kind === "session-create") {
+      return createWebSession({ agentHome, body });
+    }
+    if (route.kind === "session-message") {
+      return addWebSessionMessage({ agentHome, sessionId: route.id, body });
     }
     if (route.kind === "dispatch-approve") {
       const defaultRepo = getTelegramCodexPolicy(agentHome).default_repo;
@@ -73,12 +82,14 @@ export function isWebActionPath(pathname) {
 
 function actionRoute(pathname) {
   if (pathname === "/api/requests") return { kind: "request", confirm: null };
+  if (pathname === "/api/sessions") return { kind: "session-create", confirm: null };
   if (pathname === "/api/stop") return { kind: "stop", confirm: "stop_all" };
   const archive = matchId(pathname, /^\/api\/inbox\/([^/]+)\/archive$/);
   if (archive !== null) return { kind: "archive", id: archive, confirm: "archive" };
   for (const [pattern, kind, confirm] of [
     [/^\/api\/dispatch\/([^/]+)\/approve$/, "dispatch-approve", "approve"],
     [/^\/api\/dispatch\/([^/]+)\/reject$/, "dispatch-reject", "reject"],
+    [/^\/api\/sessions\/([^/]+)\/messages$/, "session-message", null],
     [/^\/api\/sessions\/([^/]+)\/kill$/, "session-kill", "kill"],
     [/^\/api\/agents\/([^/]+)\/enable$/, "agent-enable", "enable"],
     [/^\/api\/agents\/([^/]+)\/disable$/, "agent-disable", "disable"],
@@ -87,6 +98,82 @@ function actionRoute(pathname) {
     if (id !== null) return { kind, id, confirm };
   }
   return null;
+}
+
+async function createWebSession({ agentHome, body }) {
+  const invalid = invalidSessionBody(body);
+  if (invalid) return invalid;
+  try {
+    const session = await openSession({
+      agentHome,
+      initiator: "owner",
+      participants: [...new Set(body.participants.map((participant) => participant.trim()))],
+      topic: body.topic.trim(),
+      repo: body.repo?.trim() || null,
+      budgetMessages: optionalPositiveInteger(body.budgetMessages),
+      budgetMinutes: optionalPositiveInteger(body.budgetMinutes),
+    });
+    const kickoff = kickoffSession({ agentHome, session });
+    return {
+      status: 201,
+      value: {
+        ok: true,
+        sessionId: session.session_id,
+        session: kickoff.session || session,
+        kickoff: { sent: kickoff.sent, messageIds: kickoff.messages.map((message) => message.id) },
+      },
+    };
+  } catch (error) {
+    return { status: 400, value: { error: error?.code || "invalid_session", message: String(error?.message || "Invalid session") } };
+  }
+}
+
+function addWebSessionMessage({ agentHome, sessionId, body }) {
+  const unknownField = Object.keys(body).find((field) => !SESSION_MESSAGE_FIELDS.has(field));
+  if (unknownField) return { status: 400, value: { error: "invalid_field", field: unknownField } };
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message) return { status: 400, value: { error: "message_required" } };
+  try {
+    const broadcast = broadcastOwnerSessionMessage({ agentHome, sessionId, text: message });
+    return {
+      status: 201,
+      value: {
+        ok: true,
+        sessionId: broadcast.session.session_id,
+        sent: broadcast.sent,
+        messageIds: broadcast.messages.map((entry) => entry.id),
+      },
+    };
+  } catch (error) {
+    const status = error?.code === "session_not_found" ? 404 : error?.code === "session_not_active" ? 409 : 400;
+    return { status, value: { error: error?.code || "invalid_session_message", message: String(error?.message || "Invalid session message") } };
+  }
+}
+
+function invalidSessionBody(body) {
+  const unknownField = Object.keys(body).find((field) => !SESSION_FIELDS.has(field));
+  if (unknownField) return { status: 400, value: { error: "invalid_field", field: unknownField } };
+  if (!Array.isArray(body.participants) || body.participants.some((participant) => typeof participant !== "string")) {
+    return { status: 400, value: { error: "invalid_participants" } };
+  }
+  const participants = new Set(body.participants.map((participant) => participant.trim()).filter(Boolean));
+  if (participants.size < 2) return { status: 400, value: { error: "invalid_participants" } };
+  if (typeof body.topic !== "string" || !body.topic.trim()) return { status: 400, value: { error: "topic_required" } };
+  if (body.repo != null && typeof body.repo !== "string") return { status: 400, value: { error: "invalid_repo" } };
+  for (const field of ["budgetMessages", "budgetMinutes"]) {
+    if (body[field] !== undefined && body[field] !== "" && optionalPositiveInteger(body[field]) === null) {
+      return { status: 400, value: { error: "invalid_budget", field } };
+    }
+  }
+  return null;
+}
+
+function optionalPositiveInteger(value) {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
 async function submitWebRequest({ agentHome, body, repoDir, runnerNudge }) {

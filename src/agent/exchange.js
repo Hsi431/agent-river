@@ -81,6 +81,38 @@ export function kickoffSession({ agentHome, session, channel = "session", thread
   };
 }
 
+export function broadcastOwnerSessionMessage({ agentHome, sessionId, text, channel = "session-say" } = {}) {
+  const body = typeof text === "string" ? text.trim() : "";
+  if (!body) {
+    throw new Error("Exchange message text is empty");
+  }
+  const session = getSession(agentHome, sessionId);
+  if (!session) {
+    const error = new Error(`Session not found: ${sessionId}`);
+    error.code = "session_not_found";
+    throw error;
+  }
+  if (session.state !== "active") {
+    const error = new Error(`Session is not active: ${sessionId}`);
+    error.code = "session_not_active";
+    throw error;
+  }
+  const messages = session.participants.map((target) => submitExchangeMessage({
+    agentHome,
+    from: "owner",
+    to: target,
+    channel,
+    sessionId: session.session_id,
+    repo: session.repo || null,
+    text: body,
+  }));
+  return {
+    sent: messages.length,
+    messages,
+    session: getSession(agentHome, session.session_id) || session,
+  };
+}
+
 export function relaySessionReply({ agentHome, message, reply, channel = "session-relay" } = {}) {
   if (!message?.session_id || !reply?.id) {
     return { relayed: false, reason: "no_session" };

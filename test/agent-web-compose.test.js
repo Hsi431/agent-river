@@ -12,6 +12,7 @@ import { pickEligibleExecMessage } from "../src/agent/exec-runner.js";
 import { agentPaths } from "../src/agent/paths.js";
 import { approveAgentRegistration, joinAgentRegistry, seedSpawnAgents } from "../src/agent/registry.js";
 import { enableExchangeAgent, setTelegramCodexPolicy, writeAgentConfig } from "../src/agent/safety.js";
+import { killSession } from "../src/agent/sessions.js";
 import { readJsonl } from "../src/lib/jsonl.js";
 import { handleWebAction } from "../src/web/actions.js";
 import { startWebServer } from "../src/web/server.js";
@@ -113,6 +114,142 @@ test("Web request endpoint reuses browser authority and fails closed on invalid 
     assert.equal(JSON.parse(response.body).error, error);
   }
   assert.equal(fs.existsSync(ledger), false);
+});
+
+test("Web composer opens a canonical session and broadcasts owner followups", async (t) => {
+  const workspace = makeTemp("agent-web-session-workspace-");
+  const repo = path.join(workspace, "project");
+  fs.mkdirSync(repo);
+  execFileSync("git", ["init", "-q", repo]);
+  const agentHome = makeTemp("agent-web-session-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  seedSpawnAgents({ agentHome });
+  setTelegramCodexPolicy(agentHome, { workspace_root: workspace, default_repo: repo });
+  const server = await startTestServer(t, agentHome, repo);
+  const browser = await browserAuthority(server, "/compose");
+
+  assert.match(browser.body, /Multi-agent session/);
+  assert.match(browser.body, /action="\/api\/sessions"/);
+  assert.match(browser.body, /name="participants" value="codex"/);
+  assert.match(browser.body, /name="participants" value="opus"/);
+
+  const opened = await post(server, "/api/sessions", browser, {
+    participants: ["codex", "opus"],
+    topic: "Review mailbox session behavior",
+    repo: "project",
+    budgetMessages: "8",
+    budgetMinutes: "20",
+  });
+  assert.equal(opened.status, 201);
+  const result = JSON.parse(opened.body);
+  assert.equal(result.kickoff.sent, 2);
+  assert.equal(result.session.initiator, "owner");
+  assert.deepEqual(result.session.write_access, []);
+  assert.deepEqual(result.session.budget, { max_messages: 8, max_minutes: 20 });
+  assert.equal(result.session.repo, fs.realpathSync(repo));
+
+  const sessionRows = readJsonl(agentPaths(agentHome).sessions);
+  assert.equal(sessionRows.length, 1);
+  assert.equal(sessionRows[0].event, "session_opened");
+  const kickoff = readJsonl(agentPaths(agentHome).exchangeMessages);
+  assert.equal(kickoff.length, 2);
+  assert.deepEqual(kickoff.map((message) => message.to), ["codex", "opus"]);
+  assert.ok(kickoff.every((message) => message.channel === "session" && message.session_id === result.sessionId));
+
+  const detail = await request(server, `/sessions/${encodeURIComponent(result.sessionId)}`);
+  assert.match(detail.body, new RegExp(`action="/api/sessions/${result.sessionId}/messages"`));
+  assert.match(detail.body, /Send instruction/);
+
+  const followup = await post(server, `/api/sessions/${encodeURIComponent(result.sessionId)}/messages`, browser, {
+    message: "Compare the implementation and report risks.",
+  });
+  assert.equal(followup.status, 201);
+  assert.equal(JSON.parse(followup.body).sent, 2);
+  const messages = readJsonl(agentPaths(agentHome).exchangeMessages);
+  assert.equal(messages.length, 4);
+  assert.deepEqual(messages.slice(2).map((message) => message.to), ["codex", "opus"]);
+  assert.ok(messages.slice(2).every((message) => message.from === "owner" && message.channel === "session-say"));
+  assert.equal(readJsonl(agentPaths(agentHome).sessions).filter((row) => row.event === "session_message").length, 0);
+});
+
+test("Web session writes reject invalid and closed requests without mutation", async (t) => {
+  const agentHome = makeTemp("agent-web-session-validation-");
+  enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
+  seedSpawnAgents({ agentHome });
+  const server = await startTestServer(t, agentHome, process.cwd());
+  const browser = await browserAuthority(server, "/compose");
+  const sessionsPath = agentPaths(agentHome).sessions;
+  const messagesPath = agentPaths(agentHome).exchangeMessages;
+
+  for (const [body, error] of [
+    [{ participants: ["codex", "opus"], topic: "Valid topic", writeAccess: ["codex"] }, "invalid_field"],
+    [{ participants: ["codex"], topic: "Valid topic" }, "invalid_participants"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: "0" }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: null }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: true }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: ["1"] }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: { value: 1 } }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: 1.5 }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: "+1" }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: " 1" }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMessages: "1.0" }, "invalid_budget"],
+    [{ participants: ["codex", "opus"], topic: "Valid topic", budgetMinutes: "1e2" }, "invalid_budget"],
+    [{ participants: ["codex", "ghost"], topic: "Valid topic" }, "participant_not_registered"],
+  ]) {
+    const response = await post(server, "/api/sessions", browser, body);
+    assert.equal(response.status, 400);
+    assert.equal(JSON.parse(response.body).error, error);
+  }
+  assert.equal(fs.existsSync(sessionsPath), false);
+  assert.equal(fs.existsSync(messagesPath), false);
+
+  const opened = await post(server, "/api/sessions", browser, {
+    participants: ["codex", "opus"],
+    topic: "Close this test session",
+  });
+  const sessionId = JSON.parse(opened.body).sessionId;
+  killSession({ agentHome, id: sessionId });
+  const beforeSessions = fs.readFileSync(sessionsPath, "utf8");
+  const beforeMessages = fs.readFileSync(messagesPath, "utf8");
+
+  for (const [id, body, status, error] of [
+    [sessionId, { message: "Do not write this." }, 409, "session_not_active"],
+    ["sess_missing", { message: "Do not write this either." }, 404, "session_not_found"],
+    [sessionId, { message: "No unknown fields.", mode: "edit" }, 400, "invalid_field"],
+    [sessionId, { message: "" }, 400, "message_required"],
+  ]) {
+    const response = await post(server, `/api/sessions/${encodeURIComponent(id)}/messages`, browser, body);
+    assert.equal(response.status, status);
+    assert.equal(JSON.parse(response.body).error, error);
+    assert.equal(fs.readFileSync(sessionsPath, "utf8"), beforeSessions);
+    assert.equal(fs.readFileSync(messagesPath, "utf8"), beforeMessages);
+  }
+});
+
+test("Web session participants include active registered agents without direct request routes", async (t) => {
+  const agentHome = makeTemp("agent-web-session-participants-");
+  seedSpawnAgents({ agentHome });
+  joinAgentRegistry({ agentHome, name: "reviewer", style: "poll", capabilities: "read" });
+  approveAgentRegistration({ agentHome, name: "reviewer" });
+  const server = await startTestServer(t, agentHome, process.cwd());
+  const browser = await browserAuthority(server, "/compose");
+
+  assert.doesNotMatch(browser.body, /<option value="reviewer">/);
+  assert.match(browser.body, /name="participants" value="reviewer"/);
+  const direct = await post(server, "/api/requests", browser, { target: "reviewer", request: "Not a direct route." });
+  assert.equal(direct.status, 409);
+  assert.equal(JSON.parse(direct.body).error, "target_not_eligible");
+
+  const opened = await post(server, "/api/sessions", browser, {
+    participants: ["codex", "reviewer"],
+    topic: "Review together through the session lane",
+    budgetMessages: 3,
+    budgetMinutes: "12",
+  });
+  assert.equal(opened.status, 201);
+  const session = JSON.parse(opened.body).session;
+  assert.deepEqual(session.participants, ["codex", "reviewer"]);
+  assert.deepEqual(session.budget, { max_messages: 3, max_minutes: 12 });
 });
 
 test("managed runners accept trusted Web envelopes under their existing sender rules", () => {
