@@ -1,19 +1,23 @@
+import { createTranslator, normalizeLocale } from "./i18n.js";
+
 const NAV = [
   ["/", "Dashboard"], ["/compose", "New request"], ["/inbox", "Inbox"], ["/dispatch", "Dispatch Gate"],
   ["/sessions", "Sessions"], ["/agents", "Agents"], ["/safety", "Safety"], ["/archive", "Archive"],
 ];
 
-export function renderPage({ view, title, data, csrfToken }) {
+export function renderPage({ view, title, data, csrfToken, currentPath = "/", locale = "en", t = createTranslator(locale) }) {
   const main = renderView(view, data);
   const context = renderContext(view, data);
+  const selectedLocale = normalizeLocale(locale);
+  const next = encodeURIComponent(currentPath.startsWith("/") ? currentPath : "/");
   const autoRefresh = view === "inbox-detail" || view === "session-detail" ? " data-auto-refresh=\"5000\"" : "";
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="${escapeHtml(selectedLocale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="${escapeHtml(csrfToken || "")}"><title>${escapeHtml(title)} · Agent River</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/app.js" defer></script></head>
 <body${autoRefresh}><div class="shell"><aside class="sidebar"><a class="brand" href="/"><span>AR</span><b>Agent River</b></a>
 <a class="compose" href="/compose">＋ New request</a><nav>${NAV.map(([href, label]) => `<a href="${href}"${activeNav(view, href) ? " class=\"active\"" : ""}>${label}</a>`).join("")}</nav>
 <footer>Local control plane<br><span>127.0.0.1 only</span></footer></aside>
-<main><header><div><p class="eyebrow">Agent post office</p><h1>${escapeHtml(title)}</h1></div><span class="local-badge">LOCAL</span></header><div class="action-message" role="status" hidden></div>${main}</main>
+<main><header><div><p class="eyebrow">Agent post office</p><h1>${escapeHtml(title)}</h1></div><div class="header-actions"><nav class="locale-switcher" aria-label="${escapeHtml(t("language.switch"))}"><a href="/language?locale=en&amp;next=${next}"${selectedLocale === "en" ? " aria-current=\"true\"" : ""}>${escapeHtml(t("language.en"))}</a><a href="/language?locale=zh-Hant&amp;next=${next}"${selectedLocale === "zh-Hant" ? " aria-current=\"true\"" : ""}>${escapeHtml(t("language.zh-Hant"))}</a></nav><span class="local-badge">LOCAL</span></div></header><div class="action-message" role="status" hidden></div>${main}</main>
 <aside class="rail"><h2>Context</h2>${context}<div class="safety-note"><b>Safety-gated actions</b><p>Mutations reuse Agent River's existing domain checks.</p></div></aside></div></body></html>`;
 }
 

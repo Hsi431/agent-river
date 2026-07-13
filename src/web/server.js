@@ -18,6 +18,7 @@ import {
 } from "./read-model.js";
 import { renderPage } from "./render.js";
 import { handleWebAction, isWebActionPath } from "./actions.js";
+import { createTranslator, detectLocale, localeCookie, normalizeLocale } from "./i18n.js";
 
 const BIND_ADDRESS = "127.0.0.1";
 const COOKIE_NAME = "agent_river_web";
@@ -88,13 +89,26 @@ async function handleRequest({ agentHome, actionSecurity, readOptions, request, 
       response.setHeader("allow", "GET, POST");
       return sendText(response, 405, "Method Not Allowed");
     }
+    if (url.pathname === "/language") {
+      response.setHeader("set-cookie", localeCookie(normalizeLocale(url.searchParams.get("locale"))));
+      response.setHeader("location", safeLocalPath(url.searchParams.get("next")));
+      return sendText(response, 302, "Found");
+    }
     const asset = assetRoute(url.pathname);
     if (asset) return sendAsset(response, asset);
     if (url.pathname.startsWith("/api/")) return sendApi({ agentHome, readOptions, pathname: url.pathname, response });
     const page = pageData(agentHome, readOptions, url.pathname);
     if (!page) return sendText(response, 404, "Not Found");
+    const locale = detectLocale({ cookieHeader: request.headers.cookie, acceptLanguage: request.headers["accept-language"] });
     response.setHeader("set-cookie", actionSecurity.cookie);
-    return send(response, 200, renderPage({ ...page, csrfToken: actionSecurity.csrfToken }), "text/html; charset=utf-8");
+    response.setHeader("content-language", locale);
+    return send(response, 200, renderPage({
+      ...page,
+      csrfToken: actionSecurity.csrfToken,
+      currentPath: url.pathname,
+      locale,
+      t: createTranslator(locale),
+    }), "text/html; charset=utf-8");
   } catch {
     return sendText(response, 500, "Internal Server Error");
   }
@@ -158,6 +172,17 @@ function routeId(pathname, prefix) {
     return decodeURIComponent(encoded);
   } catch {
     return null;
+  }
+}
+
+function safeLocalPath(value) {
+  const candidate = String(value || "");
+  if (!candidate.startsWith("/") || candidate.startsWith("//") || candidate.includes("\\") || /[\u0000-\u001f]/.test(candidate)) return "/";
+  try {
+    const url = new URL(candidate, "http://agent-river.local");
+    return url.origin === "http://agent-river.local" ? `${url.pathname}${url.search}` : "/";
+  } catch {
+    return "/";
   }
 }
 
