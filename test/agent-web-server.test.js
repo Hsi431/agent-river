@@ -90,7 +90,7 @@ test("web server covers every read-only page and API route", async (t) => {
   });
   const server = await startTestServer(t, agentHome);
   const htmlRoutes = [
-    "/", "/inbox", `/inbox/${message.id}`, "/dispatch", "/sessions",
+    "/", "/compose", "/inbox", `/inbox/${message.id}`, "/dispatch", "/sessions",
     `/sessions/${session.session_id}`, "/agents", "/safety", "/archive",
   ];
   for (const route of htmlRoutes) {

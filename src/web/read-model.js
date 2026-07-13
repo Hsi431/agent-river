@@ -8,6 +8,7 @@ import { checkSafety, getSafetyStatus } from "../agent/safety.js";
 import { codexRunnerServiceStatus, dashboardServiceStatus, execRunnerServiceStatus, opusRunnerServiceStatus, webServiceStatus } from "../agent/service.js";
 import { readJsonl } from "../lib/jsonl.js";
 import { redactSecrets } from "../lib/secret-scan.js";
+import { isOwnerMailboxTargetEligible } from "../agent/owner-mailbox.js";
 
 const TERMINAL_TASK_STATES = new Set(["done", "failed", "rejected", "cancelled"]);
 const TERMINAL_SESSION_STATES = new Set(["closed_ok", "exhausted", "killed"]);
@@ -48,7 +49,7 @@ export function listInboxItems(agentHome, { now = Date.now() } = {}) {
     return {
       id: message.id,
       type: "exchange_message",
-      title: `Message from ${message.from || "unknown"}`,
+      title: message.subject ? redactSecrets(String(message.subject)) : `Message from ${message.from || "unknown"}`,
       sender: message.from || null,
       recipient: message.to || null,
       repo: message.repo || null,
@@ -192,6 +193,12 @@ export function listWebAgents(agentHome, { now = Date.now() } = {}) {
       raw: sanitizeRaw({ registry: agent, routing: route }),
     };
   });
+}
+
+export function listWebRequestTargets(agentHome) {
+  return listWebAgents(agentHome)
+    .filter((agent) => isOwnerMailboxTargetEligible(agentHome, agent.name, { allowPrimary: true, requireActiveTarget: true }))
+    .map((agent) => ({ name: agent.name, kind: agent.kind, style: agent.style, primary: agent.primary }));
 }
 
 export function readWebSafety(agentHome, { now = new Date(), repoDir = process.cwd(), systemdDir, webPort = 4310 } = {}) {

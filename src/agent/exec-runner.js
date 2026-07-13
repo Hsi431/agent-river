@@ -17,6 +17,7 @@ import { getSession, isSessionExchangeEligible } from "./sessions.js";
 import { listRegisteredAgents } from "./registry.js";
 import { terminateGroup } from "./v2/kill.js";
 import { resolveMessageRepoBinding } from "./runner-repo.js";
+import { isOwnerMailboxChannel } from "./owner-mailbox.js";
 
 const MAX_STDOUT_BYTES = 64 * 1024;
 const MAX_STDERR_BYTES = 4096;
@@ -71,7 +72,7 @@ export function pickEligibleExecMessage(agentHome, agentName, { now = Date.now()
       && (message.session_id
         ? isSessionExchangeEligible(agentHome, message, agentName, { now }).eligible
         : (allowedSenders.has(String(message.from))
-          && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)))
+          && (isOwnerMailboxChannel(message.channel) || message.channel === DISPATCH_CHANNEL)))
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
   return eligible[0] || null;

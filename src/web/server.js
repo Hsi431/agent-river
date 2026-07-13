@@ -10,6 +10,7 @@ import {
   listDispatchItems,
   listInboxItems,
   listWebAgents,
+  listWebRequestTargets,
   listWebSessions,
   readWebSafety,
   readWebStatus,
@@ -79,7 +80,7 @@ async function handleRequest({ agentHome, actionSecurity, readOptions, request, 
       } catch (error) {
         return sendJson(response, error.status || 400, { error: error.code || "invalid_request" });
       }
-      const result = await handleWebAction({ agentHome, pathname: url.pathname, body });
+      const result = await handleWebAction({ agentHome, pathname: url.pathname, body, repoDir: readOptions.repoDir });
       return sendJson(response, result.status, result.value);
     }
     if (request.method !== "GET") {
@@ -100,6 +101,7 @@ async function handleRequest({ agentHome, actionSecurity, readOptions, request, 
 
 function pageData(agentHome, readOptions, pathname) {
   if (pathname === "/") return { view: "dashboard", title: "Dashboard", data: readWebStatus(agentHome, readOptions) };
+  if (pathname === "/compose") return { view: "compose", title: "New request", data: { targets: listWebRequestTargets(agentHome) } };
   if (pathname === "/inbox") return { view: "inbox", title: "Inbox", data: listInboxItems(agentHome) };
   if (pathname === "/dispatch") return { view: "dispatch", title: "Dispatch Gate", data: listDispatchItems(agentHome) };
   if (pathname === "/sessions") return { view: "sessions", title: "Sessions", data: listWebSessions(agentHome) };

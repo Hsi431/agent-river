@@ -15,9 +15,10 @@ import {
 import { isSessionExchangeEligible } from "./sessions.js";
 import { createDispatchApproval, DISPATCH_CHANNEL, parseDispatchProposal } from "./dispatch.js";
 import { resolveMessageRepoBinding } from "./runner-repo.js";
+import { isOwnerMailboxChannel } from "./owner-mailbox.js";
 
 // Opus-side exchange auto-runner (v1). Single-shot: pick at most one eligible
-// message addressed to opus over Telegram from codex, claim it in Node, then
+// message addressed to opus over an owner mailbox channel from codex, claim it in Node, then
 // spawn a tool-restricted headless Claude to review and reply. The runner never
 // passes raw message text to the spawned process (only the message id), never
 // creates a new exchange message, and never edits files. Spawn is injectable so
@@ -432,7 +433,7 @@ export function pickEligibleMessage(agentHome, { now = Date.now() } = {}) {
     .filter((message) => message.to === RUNNER_AGENT
       && (message.session_id
         ? isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }).eligible
-        : ((message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)
+        : ((isOwnerMailboxChannel(message.channel) || message.channel === DISPATCH_CHANNEL)
           && message.from === expectedFrom))
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));

@@ -9,7 +9,7 @@ import { assertSessionMessageAllowed, consumeBudget, getSession } from "./sessio
 const VALID_TARGET = /^[a-z][a-z0-9_-]*$|^any$/;
 const DEFAULT_LEASE_SECONDS = 3600;
 
-export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, dispatch = null, sessionId = null, repo = null }) {
+export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, subject = null, dispatch = null, sessionId = null, repo = null }) {
   const sender = requireName(from, "from");
   const target = requireName(to, "to");
   const body = String(text || "");
@@ -33,6 +33,7 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     chat_id: chatId ? String(chatId) : null,
     text: redacted,
     text_hash: shortHash(redacted),
+    ...(subject ? { subject: redactSecrets(String(subject)) } : {}),
     ...(session ? { session_id: session.session_id } : {}),
     ...(repo || session?.repo ? { repo: String(repo || session.repo) } : {}),
     ...(dispatch ? { dispatch } : {}),

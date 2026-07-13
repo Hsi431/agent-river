@@ -76,7 +76,7 @@ test("codex runner is off by default and never claims or spawns", async () => {
   assert.equal(readJsonl(agentPaths(agentHome).exchangeClaims).length, 0);
 });
 
-test("codex runner only picks to=codex channel=telegram/dispatch open messages, oldest first", async () => {
+test("codex runner only picks trusted owner/dispatch channels, oldest first", async () => {
   const agentHome = makeAgentHome("codex-xrunner-gating-");
   enableExchangeAgent(agentHome, { agentId: "codex", kind: "coding" });
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" }); // trusted sender (§F2)

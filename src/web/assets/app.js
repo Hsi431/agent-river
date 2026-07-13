@@ -27,6 +27,30 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest(".request-form");
+  if (!form) return;
+  event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  const values = Object.fromEntries(new FormData(form));
+  button.disabled = true;
+  show("Queuing request…", false);
+  try {
+    const response = await fetch(form.action, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", "x-csrf-token": token },
+      body: JSON.stringify(values),
+    });
+    const result = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    if (!response.ok) throw new Error(result.message || result.error || `HTTP ${response.status}`);
+    window.location.assign("/inbox");
+  } catch (error) {
+    button.disabled = false;
+    show(error.message || "Request failed.", true);
+  }
+});
+
 function show(text, failed) {
   if (!message) return;
   message.hidden = false;

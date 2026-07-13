@@ -33,7 +33,7 @@ test("exchange runner is off by default and never claims or spawns", async () =>
   assert.equal(readJsonl(agentPaths(agentHome).exchangeClaims).length, 0);
 });
 
-test("exchange runner only picks to=opus channel=telegram from=codex open messages, one per run", async () => {
+test("exchange runner only picks trusted owner/dispatch channels from codex, one per run", async () => {
   const agentHome = makeAgentHome("codex-agent-runner-gating-");
   enableExchangeAgent(agentHome, { agentId: "opus", kind: "review" });
   setTelegramCodexPolicy(agentHome, { exchange_runner_enabled: true });

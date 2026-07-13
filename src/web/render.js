@@ -1,5 +1,5 @@
 const NAV = [
-  ["/", "Dashboard"], ["/inbox", "Inbox"], ["/dispatch", "Dispatch Gate"],
+  ["/", "Dashboard"], ["/compose", "New request"], ["/inbox", "Inbox"], ["/dispatch", "Dispatch Gate"],
   ["/sessions", "Sessions"], ["/agents", "Agents"], ["/safety", "Safety"], ["/archive", "Archive"],
 ];
 
@@ -10,7 +10,7 @@ export function renderPage({ view, title, data, csrfToken }) {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="${escapeHtml(csrfToken || "")}"><title>${escapeHtml(title)} · Agent River</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/app.js" defer></script></head>
 <body><div class="shell"><aside class="sidebar"><a class="brand" href="/"><span>AR</span><b>Agent River</b></a>
-<button class="compose" disabled title="Write actions are not enabled">＋ New request</button><nav>${NAV.map(([href, label]) => `<a href="${href}"${activeNav(view, href) ? " class=\"active\"" : ""}>${label}</a>`).join("")}</nav>
+<a class="compose" href="/compose">＋ New request</a><nav>${NAV.map(([href, label]) => `<a href="${href}"${activeNav(view, href) ? " class=\"active\"" : ""}>${label}</a>`).join("")}</nav>
 <footer>Local control plane<br><span>127.0.0.1 only</span></footer></aside>
 <main><header><div><p class="eyebrow">Agent post office</p><h1>${escapeHtml(title)}</h1></div><span class="local-badge">LOCAL</span></header><div class="action-message" role="status" hidden></div>${main}</main>
 <aside class="rail"><h2>Context</h2>${context}<div class="safety-note"><b>Safety-gated actions</b><p>Mutations reuse Agent River's existing domain checks.</p></div></aside></div></body></html>`;
@@ -18,6 +18,7 @@ export function renderPage({ view, title, data, csrfToken }) {
 
 function renderView(view, data) {
   if (view === "dashboard") return dashboard(data);
+  if (view === "compose") return compose(data);
   if (view === "inbox") return itemList(data, "No inbox items yet.", inboxCard);
   if (view === "dispatch") return itemList(data, "No dispatch approvals.", dispatchCard);
   if (view === "sessions") return itemList(data, "No sessions recorded.", sessionCard);
@@ -27,6 +28,19 @@ function renderView(view, data) {
   if (view === "inbox-detail") return inboxDetail(data);
   if (view === "session-detail") return sessionDetail(data);
   return empty("Unknown view");
+}
+
+function compose(data) {
+  const targets = Array.isArray(data.targets) ? data.targets : [];
+  if (!targets.length) return `<section class="panel">${empty("No eligible agent routes are available.")}</section>`;
+  const options = targets.map((target) => `<option value="${escapeHtml(target.name)}">${escapeHtml(joinMeta(target.name, target.style, target.primary ? "primary" : target.kind))}</option>`).join("");
+  return `<section class="panel compose-panel"><form class="request-form" action="/api/requests" method="post">
+    <label>Target agent<select name="target" required>${options}</select></label>
+    <label>Subject <span>optional, 120 characters max</span><input name="subject" maxlength="120" autocomplete="off"></label>
+    <label>Request<textarea name="request" rows="10" required></textarea></label>
+    <label>Repository <span>optional, name or absolute path inside the configured workspace</span><input name="repo" autocomplete="off" spellcheck="false"></label>
+    <button type="submit">Send request</button>
+  </form></section>`;
 }
 
 function dashboard(data) {
@@ -114,6 +128,7 @@ function timelineRow(row) {
 function renderContext(view, data) {
   if (Array.isArray(data)) return `${fact("Visible records", data.length)}${fact("View", view)}`;
   if (view === "dashboard") return `${fact("System", data.system)}${fact("Warnings", data.warnings?.length || 0)}`;
+  if (view === "compose") return `${fact("Eligible targets", data.targets?.length || 0)}${fact("Channel", "web")}`;
   return `${fact("Record", data.id || data.sessionId || view)}${fact("Status", data.status || "current")}${data.rawPath ? fact("Source", data.rawPath) : ""}`;
 }
 

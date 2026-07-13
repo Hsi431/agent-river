@@ -16,6 +16,7 @@ import { isSessionExchangeEligible } from "./sessions.js";
 import { createDispatchApproval, DISPATCH_CHANNEL, dispatchTargetAllowlist, parseDispatchProposal } from "./dispatch.js";
 import { realCodexRunner } from "./codex-runner.js";
 import { resolveMessageRepoBinding } from "./runner-repo.js";
+import { isOwnerMailboxChannel } from "./owner-mailbox.js";
 
 // Codex-side exchange auto-runner (v1). Single-shot: pick at most one eligible
 // message addressed to codex, claim it in Node, invoke codex exec via
@@ -236,7 +237,7 @@ export function pickEligibleCodexMessage(agentHome, { now = Date.now() } = {}) {
       && (message.session_id
         ? isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }).eligible
         : (allowedSenders.has(String(message.from))
-          && (message.channel === "telegram" || message.channel === DISPATCH_CHANNEL)))
+          && (isOwnerMailboxChannel(message.channel) || message.channel === DISPATCH_CHANNEL)))
       && isAvailableClaim(message.claim))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
   return eligible[0] || null;
