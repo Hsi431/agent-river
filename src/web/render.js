@@ -17,6 +17,10 @@ const KNOWN_STATUSES = new Set([
 ]);
 
 const KNOWN_VALUES = new Set(["enabled", "disabled", "present", "absent", "missing", "match", "drifted"]);
+const CLIENT_MESSAGES = [
+  ["confirm", "client.confirm"], ["running", "client.running"], ["completed", "client.completed"],
+  ["submitting", "client.submitting"], ["action-failed", "client.actionFailed"], ["request-failed", "client.requestFailed"],
+];
 
 export function renderPage({ view, title, data, csrfToken, currentPath = "/", locale = "en", t = createTranslator(locale) }) {
   const displayTitle = PAGE_TITLES[view] ? t(PAGE_TITLES[view]) : view === "inbox-detail" ? displayItemTitle(data, t) : title;
@@ -25,9 +29,10 @@ export function renderPage({ view, title, data, csrfToken, currentPath = "/", lo
   const selectedLocale = normalizeLocale(locale);
   const next = encodeURIComponent(currentPath.startsWith("/") ? currentPath : "/");
   const autoRefresh = view === "inbox-detail" || view === "session-detail" ? " data-auto-refresh=\"5000\"" : "";
+  const clientMessages = CLIENT_MESSAGES.map(([name, key]) => `<meta name="client-i18n-${name}" content="${escapeHtml(t(key))}">`).join("");
   return `<!doctype html>
 <html lang="${escapeHtml(selectedLocale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="csrf-token" content="${escapeHtml(csrfToken || "")}"><title>${escapeHtml(displayTitle)} · Agent River</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/app.js" defer></script></head>
+<meta name="csrf-token" content="${escapeHtml(csrfToken || "")}">${clientMessages}<title>${escapeHtml(displayTitle)} · Agent River</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/app.js" defer></script></head>
 <body${autoRefresh}><div class="shell"><aside class="sidebar"><a class="brand" href="/"><span>AR</span><b>Agent River</b></a>
 <a class="compose" href="/compose">＋ ${escapeHtml(t("nav.compose"))}</a><nav>${NAV.map(([href, key]) => `<a href="${href}"${activeNav(view, href) ? " class=\"active\"" : ""}>${escapeHtml(t(key))}</a>`).join("")}</nav>
 <footer>${escapeHtml(t("shell.localControlPlane"))}<br><span>${escapeHtml(t("shell.localOnly"))}</span></footer></aside>

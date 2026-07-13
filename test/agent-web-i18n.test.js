@@ -48,6 +48,10 @@ test("translation catalogs have parity and placeholders preserve safe fallbacks"
   const zh = createTranslator("zh-Hant");
   assert.equal(en("common.messages", { count: 3 }), "3 messages");
   assert.equal(zh("common.messages", { count: 3 }), "3 則訊息");
+  assert.equal(en("client.confirm", { label: "Approve" }), "Confirm Approve?");
+  assert.equal(zh("client.confirm", { label: "核准" }), "確認「核准」？");
+  assert.equal(en("client.completed", { label: "Approve" }), "Approve completed.");
+  assert.equal(zh("client.completed", { label: "核准" }), "「核准」已完成。");
   assert.equal(zh("common.lastClaim"), "上次領取於 {time}");
   assert.equal(zh("missing.key", { count: 3 }), "missing.key");
 });
@@ -69,8 +73,9 @@ test("English and Traditional Chinese renders localize chrome without changing o
     rawPath: "/state/dispatch-approvals.jsonl",
     raw: { id: "dispatch_contract_01", status: "pending", command: "CANONICAL_PAYLOAD" },
   };
-  const en = renderPage({ view: "inbox-detail", title: item.title, data: item, locale: "en" });
-  const zh = renderPage({ view: "inbox-detail", title: item.title, data: item, locale: "zh-Hant" });
+  const options = { view: "inbox-detail", title: item.title, data: item, csrfToken: "csrf_contract", currentPath: "/inbox/dispatch_contract_01" };
+  const en = renderPage({ ...options, locale: "en" });
+  const zh = renderPage({ ...options, locale: "zh-Hant" });
 
   assert.match(en, /Dispatch codex to opus/);
   assert.match(en, />Sender</);
@@ -79,7 +84,12 @@ test("English and Traditional Chinese renders localize chrome without changing o
   assert.match(zh, />寄件者</);
   assert.match(zh, />核准</);
   assert.match(zh, /待處理/);
+  assert.match(en, /name="client-i18n-confirm" content="Confirm \{label\}\?"/);
+  assert.match(zh, /name="client-i18n-confirm" content="確認「\{label\}」？"/);
+  assert.match(en, /name="client-i18n-request-failed" content="Request failed\."/);
+  assert.match(zh, /name="client-i18n-request-failed" content="請求失敗。"/);
   for (const html of [en, zh]) {
+    assert.match(html, /meta name="csrf-token" content="csrf_contract"/);
     assert.match(html, /class="status pending"/);
     assert.match(html, /data-endpoint="\/api\/dispatch\/dispatch_contract_01\/approve"/);
     assert.match(html, /data-confirm="approve"/);
@@ -87,6 +97,7 @@ test("English and Traditional Chinese renders localize chrome without changing o
     assert.match(html, /sess_contract_01/);
     assert.match(html, /2026-07-13T00:00:00.000Z/);
     assert.match(html, /CANONICAL_PAYLOAD/);
+    assert.match(html, /\/language\?locale=(?:en|zh-Hant)&amp;next=%2Finbox%2Fdispatch_contract_01/);
   }
 });
 

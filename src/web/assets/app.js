@@ -17,9 +17,9 @@ document.addEventListener("click", async (event) => {
   const button = event.target.closest(".action-button");
   if (!button || button.disabled) return;
   const label = button.textContent.trim();
-  if (!window.confirm(`Confirm ${label}?`)) return;
+  if (!window.confirm(clientMessage("confirm", { label }))) return;
   button.disabled = true;
-  show(`Running ${label}…`, false);
+  show(clientMessage("running", { label }), false);
   try {
     const response = await fetch(button.dataset.endpoint, {
       method: "POST",
@@ -29,11 +29,11 @@ document.addEventListener("click", async (event) => {
     });
     const result = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
     if (!response.ok) throw new Error(result.message || result.error || `HTTP ${response.status}`);
-    show(result.limitation || `${label} completed.`, false);
+    show(result.limitation || clientMessage("completed", { label }), false);
     window.setTimeout(() => window.location.reload(), 350);
   } catch (error) {
     button.disabled = false;
-    show(error.message || "Action failed.", true);
+    show(error.message || clientMessage("action-failed"), true);
   }
 });
 
@@ -44,7 +44,7 @@ document.addEventListener("submit", async (event) => {
   const button = form.querySelector('button[type="submit"]');
   const values = formValues(form);
   button.disabled = true;
-  show("Submitting…", false);
+  show(clientMessage("submitting"), false);
   try {
     const response = await fetch(form.action, {
       method: "POST",
@@ -63,7 +63,7 @@ document.addEventListener("submit", async (event) => {
     }
   } catch (error) {
     button.disabled = false;
-    show(error.message || "Request failed.", true);
+    show(error.message || clientMessage("request-failed"), true);
   }
 });
 
@@ -87,6 +87,11 @@ function markFormDirty(event) {
 function focusedFormControl() {
   const control = document.activeElement;
   return Boolean(control?.matches("input, textarea, select, button") && control.closest("form"));
+}
+
+function clientMessage(name, placeholders = {}) {
+  const template = document.querySelector(`meta[name="client-i18n-${name}"]`)?.content || "";
+  return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) => Object.hasOwn(placeholders, key) ? String(placeholders[key]) : match);
 }
 
 function show(text, failed) {
