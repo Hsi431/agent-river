@@ -30,20 +30,21 @@ const SECURITY_HEADERS = {
   "x-frame-options": "DENY",
 };
 
-export function createWebServer({ agentHome } = {}) {
+export function createWebServer({ agentHome, repoDir = process.cwd(), port = 4310 } = {}) {
   if (!agentHome) throw new Error("Missing agentHome");
   const actionSecurity = createWebActionSecurity();
+  const readOptions = { repoDir, webPort: Number(port) > 0 ? Number(port) : 4310 };
   return http.createServer((request, response) => {
-    void handleRequest({ agentHome, actionSecurity, request, response });
+    void handleRequest({ agentHome, actionSecurity, readOptions, request, response });
   });
 }
 
-export async function startWebServer({ agentHome, port = 4310 } = {}) {
+export async function startWebServer({ agentHome, repoDir = process.cwd(), port = 4310 } = {}) {
   const listenPort = Number(port);
   if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) {
     throw new Error("Web port must be an integer between 0 and 65535");
   }
-  const server = createWebServer({ agentHome });
+  const server = createWebServer({ agentHome, repoDir, port: listenPort });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(listenPort, BIND_ADDRESS, () => {
@@ -54,7 +55,7 @@ export async function startWebServer({ agentHome, port = 4310 } = {}) {
   return server;
 }
 
-async function handleRequest({ agentHome, actionSecurity, request, response }) {
+async function handleRequest({ agentHome, actionSecurity, readOptions, request, response }) {
   try {
     if (!isAllowedHost(request.headers.host, request.socket.localPort)) return sendText(response, 421, "Misdirected Request");
     let url;
@@ -87,8 +88,8 @@ async function handleRequest({ agentHome, actionSecurity, request, response }) {
     }
     const asset = assetRoute(url.pathname);
     if (asset) return sendAsset(response, asset);
-    if (url.pathname.startsWith("/api/")) return sendApi({ agentHome, pathname: url.pathname, response });
-    const page = pageData(agentHome, url.pathname);
+    if (url.pathname.startsWith("/api/")) return sendApi({ agentHome, readOptions, pathname: url.pathname, response });
+    const page = pageData(agentHome, readOptions, url.pathname);
     if (!page) return sendText(response, 404, "Not Found");
     response.setHeader("set-cookie", actionSecurity.cookie);
     return send(response, 200, renderPage({ ...page, csrfToken: actionSecurity.csrfToken }), "text/html; charset=utf-8");
@@ -97,13 +98,13 @@ async function handleRequest({ agentHome, actionSecurity, request, response }) {
   }
 }
 
-function pageData(agentHome, pathname) {
-  if (pathname === "/") return { view: "dashboard", title: "Dashboard", data: readWebStatus(agentHome) };
+function pageData(agentHome, readOptions, pathname) {
+  if (pathname === "/") return { view: "dashboard", title: "Dashboard", data: readWebStatus(agentHome, readOptions) };
   if (pathname === "/inbox") return { view: "inbox", title: "Inbox", data: listInboxItems(agentHome) };
   if (pathname === "/dispatch") return { view: "dispatch", title: "Dispatch Gate", data: listDispatchItems(agentHome) };
   if (pathname === "/sessions") return { view: "sessions", title: "Sessions", data: listWebSessions(agentHome) };
   if (pathname === "/agents") return { view: "agents", title: "Agents", data: listWebAgents(agentHome) };
-  if (pathname === "/safety") return { view: "safety", title: "Safety", data: readWebSafety(agentHome) };
+  if (pathname === "/safety") return { view: "safety", title: "Safety", data: readWebSafety(agentHome, readOptions) };
   if (pathname === "/archive") return { view: "archive", title: "Archive", data: listArchiveItems(agentHome) };
   const inboxId = routeId(pathname, "/inbox/");
   if (inboxId !== null) {
@@ -118,14 +119,14 @@ function pageData(agentHome, pathname) {
   return null;
 }
 
-function sendApi({ agentHome, pathname, response }) {
+function sendApi({ agentHome, readOptions, pathname, response }) {
   let data;
-  if (pathname === "/api/status") data = readWebStatus(agentHome);
+  if (pathname === "/api/status") data = readWebStatus(agentHome, readOptions);
   else if (pathname === "/api/inbox") data = listInboxItems(agentHome);
   else if (pathname === "/api/dispatch") data = listDispatchItems(agentHome);
   else if (pathname === "/api/sessions") data = listWebSessions(agentHome);
   else if (pathname === "/api/agents") data = listWebAgents(agentHome);
-  else if (pathname === "/api/safety") data = readWebSafety(agentHome);
+  else if (pathname === "/api/safety") data = readWebSafety(agentHome, readOptions);
   else if (pathname === "/api/archive") data = listArchiveItems(agentHome);
   else {
     const inboxId = routeId(pathname, "/api/inbox/");

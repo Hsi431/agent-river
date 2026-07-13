@@ -522,3 +522,89 @@ export function dashboardServiceStatus({ dir, agentHome, repoDir = process.cwd()
     },
   };
 }
+
+// ── local Web GUI service ────────────────────────────────────────────────────
+
+const WEB_SERVICE_NAME = "codex-agent-web.service";
+const DEFAULT_WEB_PORT = 4310;
+
+export function buildWebService({ agentHome, repoDir = process.cwd(), nodePath = process.execPath, port = DEFAULT_WEB_PORT } = {}) {
+  if (!agentHome) {
+    throw new Error("Missing agentHome");
+  }
+  const webPort = normalizeWebPort(port);
+  const args = [
+    path.join(repoDir, "bin", "codex-agent.js"),
+    "web",
+    "--state", agentHome,
+    "--repo", repoDir,
+    "--port", String(webPort),
+  ];
+  const unit = [
+    "[Unit]",
+    "Description=Agent River local Web GUI",
+    "",
+    "[Service]",
+    "Type=simple",
+    `WorkingDirectory=${repoDir}`,
+    `Environment=PATH=${SERVICE_PATH}`,
+    `ExecStart=${nodePath} ${args.join(" ")}`,
+    "Restart=on-failure",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
+  return {
+    unit_name: WEB_SERVICE_NAME,
+    bind_address: "127.0.0.1",
+    port: webPort,
+    unit,
+  };
+}
+
+export function writeWebService({ agentHome, dir, repoDir, nodePath, port } = {}) {
+  if (!dir) {
+    throw new Error("Missing required --dir");
+  }
+  const built = buildWebService({ agentHome, repoDir, nodePath, port });
+  fs.mkdirSync(dir, { recursive: true });
+  const unitPath = path.join(dir, built.unit_name);
+  fs.writeFileSync(unitPath, built.unit);
+  return {
+    unit_path: unitPath,
+    unit_name: built.unit_name,
+    bind_address: built.bind_address,
+    port: built.port,
+    note: "File written but NOT enabled. This tool never runs systemctl.",
+    next_steps: webServiceStatus({ agentHome, dir, repoDir, nodePath, port }).commands,
+  };
+}
+
+export function webServiceStatus({ agentHome, dir, repoDir = process.cwd(), nodePath = process.execPath, port } = {}) {
+  const targetDir = dir || path.join(os.homedir(), ".config", "systemd", "user");
+  const built = buildWebService({ agentHome, repoDir, nodePath, port });
+  const unitPath = path.join(targetDir, WEB_SERVICE_NAME);
+  return {
+    dir: targetDir,
+    unit: { name: WEB_SERVICE_NAME, path: unitPath, ...fileDrift(unitPath, built.unit) },
+    bind_address: built.bind_address,
+    port: built.port,
+    note: "File is generated only; this tool never runs systemctl, enables, or starts anything.",
+    commands: {
+      reload: "systemctl --user daemon-reload",
+      enable: `systemctl --user enable --now ${WEB_SERVICE_NAME}`,
+      disable: `systemctl --user disable --now ${WEB_SERVICE_NAME}`,
+      logs: `journalctl --user -u ${WEB_SERVICE_NAME}`,
+    },
+  };
+}
+
+function normalizeWebPort(value) {
+  const port = Number(value ?? DEFAULT_WEB_PORT);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Web port must be an integer between 1 and 65535");
+  }
+  return port;
+}

@@ -5,6 +5,7 @@ import { agentPaths } from "../agent/paths.js";
 import { listRegisteredAgents } from "../agent/registry.js";
 import { listSessions } from "../agent/sessions.js";
 import { checkSafety, getSafetyStatus } from "../agent/safety.js";
+import { codexRunnerServiceStatus, dashboardServiceStatus, execRunnerServiceStatus, opusRunnerServiceStatus, webServiceStatus } from "../agent/service.js";
 import { readJsonl } from "../lib/jsonl.js";
 import { redactSecrets } from "../lib/secret-scan.js";
 
@@ -193,11 +194,18 @@ export function listWebAgents(agentHome, { now = Date.now() } = {}) {
   });
 }
 
-export function readWebSafety(agentHome, { now = new Date() } = {}) {
+export function readWebSafety(agentHome, { now = new Date(), repoDir = process.cwd(), systemdDir, webPort = 4310 } = {}) {
   const paths = agentPaths(agentHome);
   const status = getSafetyStatus(agentHome, now instanceof Date ? now : new Date(now));
   const guard = checkSafety(agentHome, now instanceof Date ? now : new Date(now));
   const policy = status.config.telegram_codex_policy || {};
+  const services = {
+    dashboard: unitFileStatus(dashboardServiceStatus({ agentHome, dir: systemdDir, repoDir }).unit),
+    opus: unitFileStatus(opusRunnerServiceStatus({ dir: systemdDir, repoDir }).unit),
+    codex: unitFileStatus(codexRunnerServiceStatus({ dir: systemdDir, repoDir }).unit),
+    exec: unitFileStatus(execRunnerServiceStatus({ agentHome, dir: systemdDir, repoDir }).unit),
+    web: unitFileStatus(webServiceStatus({ agentHome, dir: systemdDir, repoDir, port: webPort }).unit),
+  };
   const warnings = [];
   if (status.config.kill_switch) warnings.push("Kill switch is enabled");
   if (status.config.config_error) warnings.push(`Configuration is fail-closed: ${status.config.config_error}`);
@@ -226,6 +234,7 @@ export function readWebSafety(agentHome, { now = new Date() } = {}) {
       codex: fs.existsSync(paths.codexExchangeRunnerLock),
       exec: fs.existsSync(paths.execRunnerLock),
     },
+    serviceUnitFiles: services,
     warnings,
     rawPath: paths.config,
     raw: sanitizeRaw({
@@ -238,6 +247,10 @@ export function readWebSafety(agentHome, { now = new Date() } = {}) {
       },
     }),
   };
+}
+
+function unitFileStatus(unit) {
+  return { name: unit.name, path: unit.path, exists: unit.exists, drift: unit.drift };
 }
 
 export function listArchiveItems(agentHome, options = {}) {

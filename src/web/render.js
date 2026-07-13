@@ -78,6 +78,11 @@ function safety(data) {
     ["Opus runner lock file", data.runnerLocks?.opus ? "present" : "absent"],
     ["Codex runner lock file", data.runnerLocks?.codex ? "present" : "absent"],
     ["Exec runner lock file", data.runnerLocks?.exec ? "present" : "absent"],
+    ["Dashboard unit file", data.serviceUnitFiles?.dashboard?.drift || "not reported"],
+    ["Opus unit file", data.serviceUnitFiles?.opus?.drift || "not reported"],
+    ["Codex unit file", data.serviceUnitFiles?.codex?.drift || "not reported"],
+    ["Exec unit file", data.serviceUnitFiles?.exec?.drift || "not reported"],
+    ["Web unit file", data.serviceUnitFiles?.web?.drift || "not reported"],
     ["Exchange runner", onOff(data.exchangeRunnerEnabled)], ["Secret scan", data.secretScanStatus || "not reported"],
   ];
   return `<section class="panel"><div class="facts">${facts.map(([label, value]) => fact(label, value)).join("")}</div></section>

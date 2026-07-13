@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs, requireArg, validateValueOptions } from "../lib/args.js";
 import { expandHome, resolveStateHome } from "../lib/paths.js";
-import { buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus, buildExecRunnerService, writeExecRunnerService, execRunnerServiceStatus, buildDashboardService, writeDashboardService, dashboardServiceStatus } from "./service.js";
+import { buildOpusRunnerService, writeOpusRunnerService, opusRunnerServiceStatus, buildOpusRunnerSettings, writeOpusRunnerSettings, buildOpusEditSettings, writeOpusEditSettings, buildCodexRunnerService, writeCodexRunnerService, codexRunnerServiceStatus, buildExecRunnerService, writeExecRunnerService, execRunnerServiceStatus, buildDashboardService, writeDashboardService, dashboardServiceStatus, buildWebService, writeWebService, webServiceStatus } from "./service.js";
 import {
   claimExchangeMessage,
   exchangeStatus,
@@ -28,6 +28,7 @@ import { allowGatewayUser, denyGatewayUser, disableExchangeAgent, enableExchange
 import { handleTelegramUpdate, parseTelegramUpdateJson, pollTelegramOnce } from "./telegram.js";
 import { getDispatchApproval, listDispatchApprovals } from "./dispatch.js";
 import { dashboardBridge, dashboardOnce } from "./dashboard/bot.js";
+import { startWebServer } from "../web/server.js";
 
 export async function runAgentCli(argv) {
   if (argv[0] === "--help" || argv[0] === "-h") {
@@ -36,7 +37,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-user-add", "direct-send-user-remove", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-user-add", "direct-send-user-remove", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "port", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   if (args.help) {
     return printHelp();
   }
@@ -320,6 +321,27 @@ export async function runAgentCli(argv) {
       return printResult(writeDashboardService({ agentHome, dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
     case "dashboard-service-status":
       return printResult(dashboardServiceStatus({ agentHome, dir: args.dir, repoDir: args.repo || process.cwd(), longPollSeconds: args["long-poll-seconds"] }));
+    case "web": {
+      const repoDir = path.resolve(expandHome(args.repo || process.cwd()));
+      const webPort = buildWebService({ agentHome, repoDir, port: args.port }).port;
+      const server = await startWebServer({ agentHome, repoDir, port: webPort });
+      const address = server.address();
+      printResult({
+        web: {
+          address: "127.0.0.1",
+          port: address.port,
+          state: agentHome,
+          repo: repoDir,
+        },
+      });
+      return waitForWebShutdown(server);
+    }
+    case "web-service-print":
+      return printResult(buildWebService({ agentHome, repoDir: args.repo || process.cwd(), port: args.port }));
+    case "web-service-write":
+      return printResult(writeWebService({ agentHome, dir: requireArg(args, "dir"), repoDir: args.repo || process.cwd(), port: args.port }));
+    case "web-service-status":
+      return printResult(webServiceStatus({ agentHome, dir: args.dir, repoDir: args.repo || process.cwd(), port: args.port }));
     case "help":
     case undefined:
       return printHelp();
@@ -447,9 +469,40 @@ function printHelp() {
   dashboard-service-print [--repo /path] [--long-poll-seconds N]
   dashboard-service-write --dir ~/.config/systemd/user [--repo /path] [--long-poll-seconds N]
   dashboard-service-status [--dir DIR] [--repo /path] [--long-poll-seconds N]
+  web [--state /path] [--repo /path] [--port 4310]
+  web-service-print [--state /path] [--repo /path] [--port 4310]
+  web-service-write --dir ~/.config/systemd/user [--state /path] [--repo /path] [--port 4310]
+  web-service-status [--dir DIR] [--state /path] [--repo /path] [--port 4310]
 
 Default state: ~/.codex/agent. Use --state .local-agent-state for development smoke tests.
 Phase D supports local gateway text commands (status, submit, run, approve, reject), v2 Telegram smoke polling, and the v3 dashboard bridge via TELEGRAM_BOT_TOKEN.`);
+}
+
+function waitForWebShutdown(server) {
+  return new Promise((resolve, reject) => {
+    let closing = false;
+    const cleanup = () => {
+      process.off("SIGINT", close);
+      process.off("SIGTERM", close);
+      server.off("error", onError);
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const close = () => {
+      if (closing) return;
+      closing = true;
+      server.close((error) => {
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      });
+    };
+    process.once("SIGINT", close);
+    process.once("SIGTERM", close);
+    server.once("error", onError);
+  });
 }
 
 function requirePollAgentTokenIfNeeded({ agentHome, name, tokenFile }) {
