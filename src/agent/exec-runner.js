@@ -92,7 +92,7 @@ export function buildExecEnvelope({ agentHome, message, repoPromptLine = null })
       ? `本 session 綁定 repo:${message.repo}`
       : "本對話未綁定任何 repo;不要假設題目與你目前所在的 codebase 相關,依題目本身回答"),
     text: mailPrompt(agentHome, message) || String(message.text || ""),
-    ...(message.mail ? { conversation_id: message.thread_id, message_kind: message.mail.kind } : {}),
+    ...(message.mail ? { conversation_id: message.thread_id, message_kind: message.mail.kind, model: message.mail.model || null, effort: message.mail.effort || null } : {}),
   })}\n`;
 }
 

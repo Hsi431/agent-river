@@ -98,3 +98,35 @@ node bin/codex-agent.js mail-stop --state ~/.codex/agent --id mail_...
 - 新服務啟動後，已從 GUI 對完成的對話追問，Otter 實際回覆「郵局追問已收到」。
 - 驗證：432/432 測試、no-memory 432/432、套件 dry-run 與 diff 格式檢查通過；
   桌面 1600px 與手機 390px 實際瀏覽器檢查沒有橫向溢出。
+
+## 每封信指定模型與思考等級
+
+收件 agent、模型與思考等級是獨立選項。GUI 新信與追問表單都有模型欄位及思考等級選單；
+CLI 使用 `--model MODEL_ID --effort LEVEL`。留空沿用收件 runner 設定，不保證特定模型。
+模型 ID 不限於固定名單；必須是該收件者的 provider 實際支援的模型。思考等級同樣依模型支援，
+不相容的選擇會報錯，不會靜默改成別的模型。GUI 標示「指定執行設定」代表傳給 runner 的要求，
+不是 provider 已確認的模型版本或成功執行證明。
+
+Agent 求助也可逐封指定，例如：
+
+````text
+```agent-mail
+{"to":"codex","model":"gpt-6-astra","effort":"high","text":"請分析這個設計的取捨。"}
+```
+````
+
+Claude 收件者使用 Claude 模型 ID／別名（如 `opus`、`sonnet`）；Codex 使用 Codex 模型 ID。
+Otter adapter 支援 `gpt-*` 與 `deepseek-*` 模型，並將 effort 傳給其 thinking level。
+模型選擇由寄件者依工作決定；不把實作、審查或一般協助永久綁到單一模型。
+轉信可換模型，回傳結果時沿用原求助者在該封信的模型與思考等級。
+
+## Otter 啟動逾時修正（2026-09-11）
+
+實際啟動測得：30 秒時 RPC 尚未就緒，55 秒時才成功回覆 get_state。
+原 adapter 在 start 的 100ms 延遲後立刻 prompt，撞上內層 30 秒期限；外層 300 秒期限無法避免。
+Otter adapter 現在先用唯讀 get_state 確認就緒，逾時只重試狀態查詢，不重送 acceptance 未知的 prompt。
+整體啟動與回覆仍受 adapter 的 240 秒期限約束。郵件提示也補上主旨，讓「如主旨」有完整上下文。
+這個修正位於獨立的 `/home/fnata_claw/otter-agent/src/agent-river-exec-adapter.mjs`。
+
+修正後已重試原本的行程問題，Otter 正常回覆、沒有再被啟動逾時擋住。
+該路徑目前沒有註冊 Calendar 工具，回覆表示無法取得行程；這不代表已查到行程。

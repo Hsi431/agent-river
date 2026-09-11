@@ -172,3 +172,46 @@ test("an owner can follow up after completion in the same conversation", (t) => 
   submitMail({ agentHome: home, from: "owner", to: "opus", conversationId: letter.thread_id, text: "Please clarify the last point." });
   assert.equal(getMailConversation(home, letter.thread_id).status, "queued");
 });
+
+test("each letter carries independent model/effort through delegation and return", (t) => {
+  const home = setup(t);
+  const first = submitMail({ agentHome: home, from: "owner", to: "otter", subject: "明天的行程", text: "如主旨", model: "gpt-5.6-terra", effort: "low" });
+  assert.match(mailPrompt(home, first), /Subject: 明天的行程/);
+  answer(home, first, '```agent-mail\n{"to":"codex","text":"分析","model":"gpt-6-astra","effort":"xhigh"}\n```');
+  const second = getMailConversation(home, first.thread_id).letters.at(-1);
+  assert.equal(second.mail.model, "gpt-6-astra");
+  assert.equal(second.mail.effort, "xhigh");
+  answer(home, second, "分析完成");
+  const returned = getMailConversation(home, first.thread_id).letters.at(-1);
+  assert.equal(returned.to, "otter");
+  assert.equal(returned.mail.model, "gpt-5.6-terra");
+  assert.equal(returned.mail.effort, "low");
+  assert.throws(() => submitMail({ agentHome: home, from: "owner", to: "codex", text: "x", effort: "invented" }), /Invalid effort/);
+});
+
+test("mail choices reach Codex, Claude and exec invocation boundaries", async (t) => {
+  const home = setup(t);
+  const { realCodexRunner } = await import("../src/agent/codex-runner.js");
+  const { buildClaudeInvocation } = await import("../src/agent/exchange-runner.js");
+  const { buildExecEnvelope } = await import("../src/agent/exec-runner.js");
+  submitMail({ agentHome: home, from: "owner", to: "codex", text: "analyse", model: "gpt-6-astra", effort: "high" });
+  await runCodexExchangeRunnerOnce({ agentHome: home, repoDir: home, codexRunnerImpl: async (options) => {
+    assert.equal(options.model, "gpt-6-astra");
+    assert.equal(options.effort, "high");
+    const result = await realCodexRunner({ ...options, execFileImpl: (_bin, args, _opts, done) => {
+      assert.equal(args[args.indexOf("--model") + 1], "gpt-6-astra");
+      assert.ok(args.includes('model_reasoning_effort="high"'));
+      queueMicrotask(() => done(null, "checked", ""));
+      return { stdin: { on() {}, write() {}, end() {} } };
+    } });
+    return { ok: true, ...result };
+  } });
+  const claude = submitMail({ agentHome: home, from: "owner", to: "opus", text: "review", model: "opus", effort: "max" });
+  const invocation = buildClaudeInvocation({ agentHome: home, repoDir: home, msgId: claude.id, model: "sonnet", settingsPath: "/tmp/settings" });
+  assert.equal(invocation.args[invocation.args.indexOf("--model") + 1], "opus");
+  assert.equal(invocation.args[invocation.args.indexOf("--effort") + 1], "max");
+  const otter = submitMail({ agentHome: home, from: "owner", to: "otter", text: "schedule", model: "gpt-5.6-sol", effort: "medium" });
+  const envelope = JSON.parse(buildExecEnvelope({ agentHome: home, message: otter }));
+  assert.equal(envelope.model, "gpt-5.6-sol");
+  assert.equal(envelope.effort, "medium");
+});

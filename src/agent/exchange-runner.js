@@ -247,7 +247,7 @@ export async function runExchangeRunnerOnce({
     }
 
     const attempt = priorAttempts + 1;
-    const model = policy.exchange_runner_model;
+    const model = message.mail?.model || policy.exchange_runner_model;
     const timeoutSeconds = Number(policy.exchange_runner_timeout_seconds);
     const chatId = message.chat_id || null;
     const sessionId = chatId ? readRunnerSession(paths, chatId) : null;
@@ -384,9 +384,10 @@ export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settin
     "--add-dir", repoDir,
     "--settings", settingsPath,
   ];
-  if (model) {
-    args.push("--model", String(model));
+  if (letter?.mail?.model || model) {
+    args.push("--model", String(letter?.mail?.model || model));
   }
+  if (letter?.mail?.effort) args.push("--effort", letter.mail.effort);
   // Persist sessions (no --no-session-persistence) so a later --resume can
   // actually find them; storing an id from a non-persisted run is what broke
   // resume with "No conversation found".

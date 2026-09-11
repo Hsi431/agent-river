@@ -13,15 +13,15 @@ import { getTelegramCodexPolicy } from "./safety.js";
 const CODEX_TIMEOUT_MS = 120000;
 const CODEX_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
-export async function realCodexRunner({ prompt, execFileImpl = execFile, cwd, agentHome, timeoutMs } = {}) {
-  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "read-only", agentHome, timeoutMs });
+export async function realCodexRunner({ prompt, execFileImpl = execFile, cwd, agentHome, timeoutMs, model, effort } = {}) {
+  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "read-only", agentHome, timeoutMs, model, effort });
 }
 
-export async function realEditCodexRunner({ prompt, execFileImpl = execFile, cwd, agentHome, timeoutMs } = {}) {
-  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "workspace-write", agentHome, timeoutMs });
+export async function realEditCodexRunner({ prompt, execFileImpl = execFile, cwd, agentHome, timeoutMs, model, effort } = {}) {
+  return realCodexRunnerWithSandbox({ prompt, execFileImpl, cwd, sandbox: "workspace-write", agentHome, timeoutMs, model, effort });
 }
 
-async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd, sandbox, agentHome, timeoutMs } = {}) {
+async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd, sandbox, agentHome, timeoutMs, model, effort } = {}) {
   const promptText = String(prompt || "");
   if (!promptText.trim()) {
     throw new Error("Codex prompt is empty");
@@ -31,8 +31,8 @@ async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd
   }
   const outFile = path.join(os.tmpdir(), `codex-reply-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   try {
-    const model = agentHome ? getTelegramCodexPolicy(agentHome).codex_runner_model : "";
-    const run = await runCodexExec({ prompt: promptText, outFile, execFileImpl, cwd, sandbox, model, timeoutMs });
+    model = model || (agentHome ? getTelegramCodexPolicy(agentHome).codex_runner_model : "");
+    const run = await runCodexExec({ prompt: promptText, outFile, execFileImpl, cwd, sandbox, model, effort, timeoutMs });
 
     const outRaw = fs.existsSync(outFile) ? fs.readFileSync(outFile) : Buffer.alloc(0);
     const stdoutText = String(run.stdout || "");
@@ -69,7 +69,7 @@ async function realCodexRunnerWithSandbox({ prompt, execFileImpl = execFile, cwd
   }
 }
 
-function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox, model, timeoutMs }) {
+function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox, model, effort, timeoutMs }) {
   return new Promise((resolve) => {
     // The prompt is NOT a process argument — it goes on stdin so inbound text is
     // never visible in a process listing (`ps`).
@@ -83,6 +83,7 @@ function runCodexExec({ prompt, outFile, execFileImpl, cwd, sandbox, model, time
     if (model) {
       args.push("--model", String(model));
     }
+    if (effort) args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
     const child = execFileImpl("codex", args, {
       cwd: cwd || process.cwd(),
       timeout: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : CODEX_TIMEOUT_MS,

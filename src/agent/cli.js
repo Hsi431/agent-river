@@ -39,7 +39,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "capability", "subject", "conversation", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-user-add", "direct-send-user-remove", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "port", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "capability", "model", "effort", "subject", "conversation", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-user-add", "direct-send-user-remove", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "port", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   if (args.help) {
     return printHelp();
   }
@@ -79,7 +79,7 @@ export async function runAgentCli(argv) {
       requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "from"), tokenFile: args["token-file"] });
       return printResult({ message: submitMail({ agentHome, from: args.from, to: args.to || "any",
         text: resolveReplyText(args), subject: args.subject, repo: args.repo,
-        conversationId: args.conversation, capability: args.capability || "auto" }) });
+        model: args.model || null, effort: args.effort || null, conversationId: args.conversation, capability: args.capability || "auto" }) });
     case "mail-list":
       return printResult({ conversations: listMailConversations(agentHome) });
     case "mail-show":
@@ -431,7 +431,7 @@ function printHelp() {
   run
   approve task_id
   reject task_id
-  mail-send --from agent --to any [--capability auto|review|coding|general] [--subject text] [--repo path] [--conversation mail_id] --text "..."
+  mail-send --from agent --to any [--capability auto|review|coding|general] [--subject text] [--repo path] [--model id] [--effort level] [--conversation mail_id] --text "..."
   mail-list
   mail-show --id mail_id
   mail-stop --id mail_id

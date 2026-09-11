@@ -25,12 +25,16 @@ test("browser sends, follows up, reassigns and stops a conversation through real
   const post = (url, body) => fetch(`${origin}${url}`, { method: "POST", headers: {
     cookie, origin, "content-type": "application/json", "x-csrf-token": token,
   }, body: JSON.stringify(body) });
-  const sent = await post("/api/mail", { target: "any", request: "請審查 <script>alert(1)</script>", subject: "自動往返" });
+  const sent = await post("/api/mail", { target: "any", request: "請審查 <script>alert(1)</script>", subject: "自動往返", model: "opus", effort: "high" });
   assert.equal(sent.status, 201);
   const { conversationId, messageId, target } = await sent.json();
   assert.equal(target, "opus");
   const detail = await (await fetch(`${origin}/mail/${conversationId}`)).text();
   assert.match(detail, /&lt;script&gt;/);
+  assert.match(html, /name="model"/);
+  assert.match(html, /name="effort"/);
+  assert.match(detail, /opus · high/);
+  assert.equal(getMailConversation(home, conversationId).letters[0].mail.model, "opus");
   assert.doesNotMatch(detail, /<script>alert/);
   assert.equal((await post(`/api/mail/letters/${messageId}/reassign`, { target: "codex" })).status, 200);
   assert.equal((await post(`/api/mail/${conversationId}/messages`, { target: "opus", request: "Also check delivery." })).status, 201);

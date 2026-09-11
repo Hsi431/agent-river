@@ -85,7 +85,7 @@ export async function runCodexExchangeRunnerOnce({
     }
 
     const attempt = priorAttempts + 1;
-    const model = policy.codex_runner_model || null;
+    const model = message.mail?.model || policy.codex_runner_model || null;
     const timeoutSeconds = Number(policy.exchange_runner_timeout_seconds) || 600;
     const repoBinding = resolveMessageRepoBinding({ message, repoDir, workspaceRoot: policy.workspace_root });
     const prompt = buildCodexPrompt({ agentHome, msgId: message.id, repoDir: repoBinding.cwd, repoPromptLine: repoBinding.promptLine });
@@ -93,7 +93,7 @@ export async function runCodexExchangeRunnerOnce({
 
     let runResult;
     try {
-      runResult = await codexRunnerImpl({ prompt, cwd: repoBinding.cwd, agentHome, timeoutSeconds, logPath, execFileImpl: execFile });
+      runResult = await codexRunnerImpl({ prompt, cwd: repoBinding.cwd, agentHome, timeoutSeconds, model, effort: message.mail?.effort, logPath, execFileImpl: execFile });
     } catch (error) {
       runResult = { ok: false, text: "", error: sanitizeError(error.message) };
     }
@@ -186,12 +186,12 @@ export async function runCodexExchangeRunnerOnce({
 
 // Default codex invocation: delegates to the shared codex-runner.js (the ONLY
 // module allowed to call `codex exec`). Logs stdout to logPath best-effort.
-async function defaultCodexRunner({ prompt, cwd, agentHome, timeoutSeconds, logPath, execFileImpl } = {}) {
+async function defaultCodexRunner({ prompt, cwd, agentHome, timeoutSeconds, logPath, execFileImpl, model, effort } = {}) {
   try {
     const timeoutMs = Number.isFinite(Number(timeoutSeconds)) && Number(timeoutSeconds) > 0
       ? Number(timeoutSeconds) * 1000
       : undefined;
-    const result = await realCodexRunner({ prompt, execFileImpl, cwd, agentHome, timeoutMs });
+    const result = await realCodexRunner({ prompt, execFileImpl, cwd, agentHome, timeoutMs, model, effort });
     if (logPath) {
       try {
         fs.mkdirSync(path.dirname(logPath), { recursive: true });
