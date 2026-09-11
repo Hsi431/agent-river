@@ -1,5 +1,7 @@
 # Agent River
 
+中央郵局入口是 `/mail`：自動分派、回信送達與完整往返 GUI。操作方式見 [中央郵局](docs/POST_OFFICE.md)。
+
 **透過 v3 Telegram 看板指揮本機 Codex 與 Claude agent。**
 
 [English](README.md) · [繁體中文](README.zh-Hant.md)

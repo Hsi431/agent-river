@@ -1,3 +1,4 @@
+import { isMailEligible, mailPrompt } from "./mail.js";
 import fs from "node:fs";
 import os from "node:os";
 import { spawn } from "node:child_process";
@@ -30,6 +31,7 @@ export async function runExecRunnerOnce({
   repoDir = process.cwd(),
   spawnImpl = spawn,
   now = Date.now(),
+  mailOnly = false,
 } = {}) {
   if (!agentHome) {
     throw new Error("Missing agentHome");
@@ -51,7 +53,7 @@ export async function runExecRunnerOnce({
 
     const results = [];
     for (const agent of agents) {
-      results.push(await runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, now }));
+      results.push(await runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, now, mailOnly }));
     }
     return {
       ran: results.some((result) => result.ran),
@@ -63,13 +65,13 @@ export async function runExecRunnerOnce({
   }
 }
 
-export function pickEligibleExecMessage(agentHome, agentName, { now = Date.now() } = {}) {
+export function pickEligibleExecMessage(agentHome, agentName, { now = Date.now(), mailOnly = false } = {}) {
   const allowedSenders = dispatchTargetAllowlist(agentHome);
   const paths = agentPaths(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: agentName })
-    .filter((message) => message.to === agentName
+    .filter((message) => (!mailOnly || message.mail) && message.to === agentName
       && failureAttemptsFor(paths, agentName, message.id) < MAX_ATTEMPTS
-      && (message.session_id
+      && (message.mail ? isMailEligible(agentHome, message) : message.session_id
         ? isSessionExchangeEligible(agentHome, message, agentName, { now }).eligible
         : (allowedSenders.has(String(message.from))
           && (isOwnerMailboxChannel(message.channel) || message.channel === DISPATCH_CHANNEL)))
@@ -89,7 +91,8 @@ export function buildExecEnvelope({ agentHome, message, repoPromptLine = null })
     repo_status: repoPromptLine || (message.repo
       ? `本 session 綁定 repo:${message.repo}`
       : "本對話未綁定任何 repo;不要假設題目與你目前所在的 codebase 相關,依題目本身回答"),
-    text: String(message.text || ""),
+    text: mailPrompt(agentHome, message) || String(message.text || ""),
+    ...(message.mail ? { conversation_id: message.thread_id, message_kind: message.mail.kind } : {}),
   })}\n`;
 }
 
@@ -170,9 +173,9 @@ export function runExecCommand({
   });
 }
 
-async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, now }) {
+async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, now, mailOnly }) {
   const skippedSession = recordFirstSkippedExecSessionMessage(agentHome, paths, agent.name, now);
-  const message = pickEligibleExecMessage(agentHome, agent.name, { now });
+  const message = pickEligibleExecMessage(agentHome, agent.name, { now, mailOnly });
   if (!message) {
     return summary(agent.name, skippedSession || { ran: false, reason: "no_eligible_message" });
   }
@@ -223,7 +226,7 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
       ? relaySessionReply({ agentHome, message, reply })
       : null;
     const parsed = parseDispatchProposal(reply.text);
-    const proposed = parsed.valid
+    const proposed = !message.mail && parsed.valid
       ? createDispatchApproval({
         agentHome,
         proposedBy: agent.name,
@@ -249,7 +252,15 @@ async function runOneExecAgent({ agentHome, paths, agent, repoDir, spawnImpl, no
     });
   }
 
-  safeRelease(agentHome, message.id, agent.name);
+  if (message.mail && attempt >= MAX_ATTEMPTS) {
+    try {
+      replyExchangeMessage({ agentHome, id: message.id, agent: agent.name,
+        text: `Blocked: ${agent.name} could not process this letter after ${attempt} attempts. ${runError(run) || "No reply received."}` });
+    } catch (error) {
+      run.replyError = sanitizeError(error.message);
+      safeRelease(agentHome, message.id, agent.name);
+    }
+  } else safeRelease(agentHome, message.id, agent.name);
   const outcome = run.timedOut ? "timed_out_released" : "failed_released";
   recordExecDispatch(paths, { agent: agent.name, messageId: message.id, attempt, outcome, now, error: runError(run), repoFallback: repoBinding.repoFallback });
   return summary(agent.name, {

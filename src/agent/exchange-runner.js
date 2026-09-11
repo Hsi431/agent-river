@@ -1,3 +1,4 @@
+import { isMailEligible, mailPrompt } from "./mail.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -187,6 +188,7 @@ export async function runExchangeRunnerOnce({
   spawnImpl = defaultSpawnClaude,
   execFileImpl = execFile,
   now = Date.now(),
+  mailOnly = false,
 } = {}) {
   if (!agentHome) {
     throw new Error("Missing agentHome");
@@ -215,7 +217,7 @@ export async function runExchangeRunnerOnce({
     }
 
     const skippedSession = recordFirstSkippedSessionMessage(agentHome, paths, now);
-    const message = pickEligibleMessage(agentHome, { now });
+    const message = pickEligibleMessage(agentHome, { now, mailOnly });
     if (!message) {
       return summary(skippedSession || { ran: false, reason: "no_eligible_message" });
     }
@@ -286,7 +288,7 @@ export async function runExchangeRunnerOnce({
         ? relaySessionReply({ agentHome, message, reply })
         : null;
       const parsed = parseDispatchProposal(reply.text);
-      const proposed = parsed.valid
+      const proposed = !message.mail && parsed.valid
         ? createDispatchApproval({
           agentHome,
           proposedBy: RUNNER_AGENT,
@@ -352,7 +354,8 @@ export async function runExchangeRunnerOnce({
 // Pure construction of the headless Claude invocation. Only the message id and
 // fixed boilerplate go into argv — never the raw message text.
 export function buildClaudeInvocation({ repoDir, agentHome, msgId, model, settingsPath, maxTurns = 40, sessionId = null, repoPromptLine = null }) {
-  const prompt = [
+  const letter = readJsonl(agentPaths(agentHome).exchangeMessages).find((m) => m.id === msgId);
+  const prompt = mailPrompt(agentHome, letter) || [
     `You are the Claude agent for Agent River. Do not call yourself Opus unless the owner explicitly asks about the legacy @opus alias.`,
     `Telegram entrypoints: @claude is the preferred user-facing name; @opus is a backwards-compatible alias for the same Claude agent.`,
     repoPromptLine || `本 session 綁定 repo:${repoDir}`,
@@ -427,11 +430,11 @@ function defaultSpawnClaude({ invocation, timeoutSeconds, execFileImpl = execFil
   });
 }
 
-export function pickEligibleMessage(agentHome, { now = Date.now() } = {}) {
+export function pickEligibleMessage(agentHome, { now = Date.now(), mailOnly = false } = {}) {
   const expectedFrom = getPrimaryAgentId(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
-    .filter((message) => message.to === RUNNER_AGENT
-      && (message.session_id
+    .filter((message) => (!mailOnly || message.mail) && message.to === RUNNER_AGENT
+      && (message.mail ? isMailEligible(agentHome, message) : message.session_id
         ? isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }).eligible
         : ((isOwnerMailboxChannel(message.channel) || message.channel === DISPATCH_CHANNEL)
           && message.from === expectedFrom))

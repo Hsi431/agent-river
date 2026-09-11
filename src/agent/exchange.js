@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { withMailLock } from "./mail-lock.js";
+import { completeMailReply, isMailEligible } from "./mail.js";
 import { appendJsonl, readJsonl, writeJsonl } from "../lib/jsonl.js";
 import { redactSecrets, scanSecrets } from "../lib/secret-scan.js";
 import { shortHash } from "../lib/hash.js";
@@ -9,7 +12,7 @@ import { assertSessionMessageAllowed, consumeBudget, getSession } from "./sessio
 const VALID_TARGET = /^[a-z][a-z0-9_-]*$|^any$/;
 const DEFAULT_LEASE_SECONDS = 3600;
 
-export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, subject = null, dispatch = null, sessionId = null, repo = null }) {
+export function submitExchangeMessage({ agentHome, from, to = "any", channel = "cli", threadId, chatId, text, subject = null, dispatch = null, sessionId = null, repo = null, mail = null }) {
   const sender = requireName(from, "from");
   const target = requireName(to, "to");
   const body = String(text || "");
@@ -25,7 +28,7 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
   const redacted = redactSecrets(body);
   const now = new Date().toISOString();
   const message = {
-    id: `msg_${Date.now()}_${shortHash(`${sender}:${target}:${redacted}`)}`,
+    id: mail ? `msg_${randomUUID()}` : `msg_${Date.now()}_${shortHash(`${sender}:${target}:${redacted}`)}`,
     from: sender,
     to: target,
     channel: String(channel || "cli"),
@@ -37,6 +40,7 @@ export function submitExchangeMessage({ agentHome, from, to = "any", channel = "
     ...(session ? { session_id: session.session_id } : {}),
     ...(repo || session?.repo ? { repo: String(repo || session.repo) } : {}),
     ...(dispatch ? { dispatch } : {}),
+    ...(mail ? { mail } : {}),
     created_at: now,
   };
   appendJsonl(agentPaths(agentHome).exchangeMessages, message);
@@ -156,12 +160,13 @@ export function listExchangeInbox(agentHome, { agent } = {}) {
     .map((message) => ({ ...message, claim: visibleClaim(claims.get(message.id)) }));
 }
 
-export function claimExchangeMessage({ agentHome, id, agent, leaseSeconds = DEFAULT_LEASE_SECONDS }) {
+function claimExchangeMessageUnlocked({ agentHome, id, agent, leaseSeconds = DEFAULT_LEASE_SECONDS }) {
   const agentId = requireEnabledAgent(agentHome, agent);
   const message = findExchangeMessage(agentHome, id);
   if (message.to !== "any" && message.to !== agentId) {
     throw new Error(`Exchange message is addressed to ${message.to}`);
   }
+  if (message.mail && !isMailEligible(agentHome, message)) throw new Error("Mail is stopped or unavailable");
   const claim = latestExchangeClaims(agentHome).get(id);
   if (isActiveClaim(claim)) {
     throw new Error(`Exchange message already claimed by ${claim.agent_id}`);
@@ -198,7 +203,7 @@ export function releaseExchangeClaim({ agentHome, id, agent }) {
   return { message: findExchangeMessage(agentHome, id), claim: event };
 }
 
-export function replyExchangeMessage({ agentHome, id, agent, text }) {
+function replyExchangeMessageUnlocked({ agentHome, id, agent, text }) {
   const agentId = requireEnabledAgent(agentHome, agent);
   const message = findExchangeMessage(agentHome, id);
   const claim = latestExchangeClaims(agentHome).get(id);
@@ -243,6 +248,7 @@ export function replyExchangeMessage({ agentHome, id, agent, text }) {
       now: Date.parse(reply.created_at),
     });
   }
+  completeMailReply({ agentHome, message, reply });
   return { message, reply };
 }
 
@@ -446,4 +452,12 @@ function requireName(value, name) {
     throw new Error(`Invalid exchange ${name}`);
   }
   return normalized;
+}
+
+export function claimExchangeMessage(options) {
+  return withMailLock(options.agentHome, () => claimExchangeMessageUnlocked(options));
+}
+
+export function replyExchangeMessage(options) {
+  return withMailLock(options.agentHome, () => replyExchangeMessageUnlocked(options));
 }

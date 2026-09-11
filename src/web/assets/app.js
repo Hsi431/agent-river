@@ -9,7 +9,10 @@ if (autoRefreshMs > 0) {
   document.addEventListener("input", markFormDirty);
   document.addEventListener("change", markFormDirty);
   window.setInterval(() => {
-    if (!formDirty && !focusedFormControl()) window.location.reload();
+    if (!formDirty && !focusedFormControl()) {
+      if (document.body.classList?.contains("postal-page")) sessionStorage.setItem("postal-scroll", String(window.scrollY));
+      window.location.reload();
+    }
   }, autoRefreshMs);
 }
 
@@ -54,7 +57,9 @@ document.addEventListener("submit", async (event) => {
     });
     const result = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
     if (!response.ok) throw new Error(result.message || result.error || `HTTP ${response.status}`);
-    if (form.dataset.success === "session") {
+    if (form.dataset.success === "mail") {
+      window.location.assign(`/mail/${encodeURIComponent(result.conversationId)}`);
+    } else if (form.dataset.success === "session") {
       window.location.assign(`/sessions/${encodeURIComponent(result.sessionId)}`);
     } else if (form.dataset.success === "reload") {
       window.location.reload();
@@ -86,7 +91,7 @@ function markFormDirty(event) {
 
 function focusedFormControl() {
   const control = document.activeElement;
-  return Boolean(control?.matches("input, textarea, select, button") && control.closest("form"));
+  return Boolean(control?.matches("[data-mail-search]") || (control?.matches("input, textarea, select, button") && control.closest("form")));
 }
 
 function clientMessage(name, placeholders = {}) {
@@ -100,3 +105,31 @@ function show(text, failed) {
   message.classList.toggle("failed", failed);
   message.textContent = text;
 }
+
+const mailSearch = document.querySelector("[data-mail-search]");
+const mailStorage = mailSearch ? window.sessionStorage : null;
+let mailFilter = mailStorage?.getItem("postal-filter") || "all";
+if (mailSearch) {
+  mailSearch.value = mailStorage?.getItem("postal-search") || "";
+  window.scrollTo(0, Number(mailStorage?.getItem("postal-scroll")) || 0);
+}
+function filterMail() {
+  const query = (mailSearch?.value || "").toLowerCase();
+  mailStorage?.setItem("postal-search", query);
+  mailStorage?.setItem("postal-filter", mailFilter);
+  for (const button of document.querySelectorAll("[data-mail-filter]")) button.setAttribute("aria-pressed", String(button.dataset.mailFilter === mailFilter));
+  for (const row of document.querySelectorAll("[data-mail-status]")) {
+    row.hidden = (mailFilter !== "all" && row.dataset.mailStatus !== mailFilter)
+      || !row.dataset.mailSearchText.includes(query);
+  }
+}
+mailSearch?.addEventListener("input", filterMail);
+document.addEventListener("click", (event) => {
+  const filter = event.target.closest("[data-mail-filter]");
+  if (!filter) return;
+  mailFilter = filter.dataset.mailFilter;
+  for (const button of document.querySelectorAll("[data-mail-filter]")) button.setAttribute("aria-pressed", String(button === filter));
+  filterMail();
+});
+
+if (mailSearch) filterMail();

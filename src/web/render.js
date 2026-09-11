@@ -1,12 +1,13 @@
+import { renderMail } from "./mail-view.js";
 import { createTranslator, normalizeLocale } from "./i18n.js";
 
 const NAV = [
-  ["/", "nav.dashboard"], ["/compose", "nav.compose"], ["/inbox", "nav.inbox"], ["/dispatch", "nav.dispatch"],
+  ["/mail", "nav.mail"], ["/", "nav.dashboard"], ["/compose", "nav.compose"], ["/inbox", "nav.inbox"], ["/dispatch", "nav.dispatch"],
   ["/sessions", "nav.sessions"], ["/agents", "nav.agents"], ["/safety", "nav.safety"], ["/archive", "nav.archive"],
 ];
 
 const PAGE_TITLES = {
-  dashboard: "page.dashboard", compose: "page.compose", inbox: "page.inbox", dispatch: "page.dispatch",
+  mail: "nav.mail", dashboard: "page.dashboard", compose: "page.compose", inbox: "page.inbox", dispatch: "page.dispatch",
   sessions: "page.sessions", agents: "page.agents", safety: "page.safety", archive: "page.archive",
 };
 
@@ -24,17 +25,17 @@ const CLIENT_MESSAGES = [
 
 export function renderPage({ view, title, data, csrfToken, currentPath = "/", locale = "en", t = createTranslator(locale) }) {
   const displayTitle = PAGE_TITLES[view] ? t(PAGE_TITLES[view]) : view === "inbox-detail" ? displayItemTitle(data, t) : title;
-  const main = renderView(view, data, t);
+  const main = view === "mail" ? renderMail(data, locale) : renderView(view, data, t);
   const context = renderContext(view, data, t);
   const selectedLocale = normalizeLocale(locale);
   const next = encodeURIComponent(currentPath.startsWith("/") ? currentPath : "/");
-  const autoRefresh = view === "inbox-detail" || view === "session-detail" ? " data-auto-refresh=\"5000\"" : "";
+  const autoRefresh = view === "mail" || view === "inbox-detail" || view === "session-detail" ? " data-auto-refresh=\"5000\"" : "";
   const clientMessages = CLIENT_MESSAGES.map(([name, key]) => `<meta name="client-i18n-${name}" content="${escapeHtml(t(key))}">`).join("");
   return `<!doctype html>
 <html lang="${escapeHtml(selectedLocale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="${escapeHtml(csrfToken || "")}">${clientMessages}<title>${escapeHtml(displayTitle)} · Agent River</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/app.js" defer></script></head>
-<body${autoRefresh}><div class="shell"><aside class="sidebar"><a class="brand" href="/"><span>AR</span><b>Agent River</b></a>
-<a class="compose" href="/compose">＋ ${escapeHtml(t("nav.compose"))}</a><nav>${NAV.map(([href, key]) => `<a href="${href}"${activeNav(view, href) ? " class=\"active\"" : ""}>${escapeHtml(t(key))}</a>`).join("")}</nav>
+<body${view === "mail" ? ' class="postal-page"' : ""}${autoRefresh}><div class="shell"><aside class="sidebar"><a class="brand" href="/mail"><span>AR</span><b>Agent River</b></a>
+<a class="compose" href="/mail/new">＋ ${escapeHtml(t("nav.compose"))}</a><nav>${NAV.map(([href, key]) => `<a href="${href}"${activeNav(view, href) ? " class=\"active\"" : ""}>${escapeHtml(t(key))}</a>`).join("")}</nav>
 <footer>${escapeHtml(t("shell.localControlPlane"))}<br><span>${escapeHtml(t("shell.localOnly"))}</span></footer></aside>
 <main><header><div><p class="eyebrow">${escapeHtml(t("shell.postOffice"))}</p><h1>${escapeHtml(displayTitle)}</h1></div><div class="header-actions"><nav class="locale-switcher" aria-label="${escapeHtml(t("language.switch"))}"><a href="/language?locale=en&amp;next=${next}"${selectedLocale === "en" ? " aria-current=\"true\"" : ""}>${escapeHtml(t("language.en"))}</a><a href="/language?locale=zh-Hant&amp;next=${next}"${selectedLocale === "zh-Hant" ? " aria-current=\"true\"" : ""}>${escapeHtml(t("language.zh-Hant"))}</a></nav><span class="local-badge">${escapeHtml(t("shell.local"))}</span></div></header><div class="action-message" role="status" hidden></div>${main}</main>
 <aside class="rail"><h2>${escapeHtml(t("shell.context"))}</h2>${context}<div class="safety-note"><b>${escapeHtml(t("shell.safetyActions"))}</b><p>${escapeHtml(t("shell.safetyNote"))}</p></div></aside></div></body></html>`;

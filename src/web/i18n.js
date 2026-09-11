@@ -3,6 +3,7 @@ export const LOCALE_COOKIE_NAME = "agent_river_locale";
 
 const TRANSLATIONS = {
   en: {
+    "nav.mail": "Post office",
     "language.switch": "Language",
     "language.en": "English",
     "language.zh-Hant": "繁體中文",
@@ -183,6 +184,7 @@ const TRANSLATIONS = {
     "status.unregistered": "unregistered",
   },
   "zh-Hant": {
+    "nav.mail": "中央郵局",
     "language.switch": "語言",
     "language.en": "English",
     "language.zh-Hant": "繁體中文",

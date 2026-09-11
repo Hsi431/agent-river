@@ -20,7 +20,8 @@
     "README.md",
     "README.zh-Hant.md",
     "SECURITY.md",
-    "package.json"
+    "package.json",
+    "docs/POST_OFFICE.md"
   ],
   "scripts": {
     "test": "node --test",

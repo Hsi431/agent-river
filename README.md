@@ -1,5 +1,7 @@
 # Agent River
 
+The central post office is available at `/mail`: automatic routing, return delivery, and a conversation GUI. See [Post office operations](docs/POST_OFFICE.md).
+
 **Drive local Codex and Claude agents from Telegram through the v3 dashboard.**
 
 [English](README.md) · [繁體中文](README.zh-Hant.md)

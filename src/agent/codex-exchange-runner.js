@@ -1,3 +1,4 @@
+import { isMailEligible, mailPrompt } from "./mail.js";
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -35,6 +36,7 @@ export async function runCodexExchangeRunnerOnce({
   repoDir = process.cwd(),
   codexRunnerImpl = defaultCodexRunner,
   now = Date.now(),
+  mailOnly = false,
 } = {}) {
   if (!agentHome) {
     throw new Error("Missing agentHome");
@@ -62,7 +64,7 @@ export async function runCodexExchangeRunnerOnce({
     }
 
     const skippedSession = recordFirstSkippedCodexSessionMessage(agentHome, paths, now);
-    const message = pickEligibleCodexMessage(agentHome, { now });
+    const message = pickEligibleCodexMessage(agentHome, { now, mailOnly });
     if (!message) {
       return summary(skippedSession || { ran: false, reason: "no_eligible_message" });
     }
@@ -120,7 +122,7 @@ export async function runCodexExchangeRunnerOnce({
         ? relaySessionReply({ agentHome, message, reply })
         : null;
       const parsed = parseDispatchProposal(reply.text);
-      const proposed = parsed.valid
+      const proposed = !message.mail && parsed.valid
         ? createDispatchApproval({
           agentHome,
           proposedBy: RUNNER_AGENT,
@@ -208,6 +210,9 @@ async function defaultCodexRunner({ prompt, cwd, agentHome, timeoutSeconds, logP
 // boilerplate go into the prompt — never raw message text. Codex reads the
 // message via the exchange-thread command.
 export function buildCodexPrompt({ agentHome, msgId, repoDir, repoPromptLine = null }) {
+  const letter = readJsonl(agentPaths(agentHome).exchangeMessages).find((m) => m.id === msgId);
+  const postal = mailPrompt(agentHome, letter);
+  if (postal) return `${repoPromptLine || ""}\n${postal}`;
   return [
     `You are the Codex agent for Agent River.`,
     repoPromptLine || `本 session 綁定 repo:${repoDir}`,
@@ -227,14 +232,14 @@ export function buildCodexPrompt({ agentHome, msgId, repoDir, repoPromptLine = n
   ].join("\n");
 }
 
-export function pickEligibleCodexMessage(agentHome, { now = Date.now() } = {}) {
+export function pickEligibleCodexMessage(agentHome, { now = Date.now(), mailOnly = false } = {}) {
   // Sender allowlist: only trusted agents (the primary agent + enabled exchange
   // agents, e.g. opus) may auto-task codex. A message from any other source is
   // NOT picked up by the runner, mirroring the opus runner's from-filter.
   const allowedSenders = dispatchTargetAllowlist(agentHome);
   const eligible = listExchangeInbox(agentHome, { agent: RUNNER_AGENT })
-    .filter((message) => message.to === RUNNER_AGENT
-      && (message.session_id
+    .filter((message) => (!mailOnly || message.mail) && message.to === RUNNER_AGENT
+      && (message.mail ? isMailEligible(agentHome, message) : message.session_id
         ? isSessionExchangeEligible(agentHome, message, RUNNER_AGENT, { now }).eligible
         : (allowedSenders.has(String(message.from))
           && (isOwnerMailboxChannel(message.channel) || message.channel === DISPATCH_CHANNEL)))

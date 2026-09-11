@@ -25,6 +25,7 @@ export function agentPaths(agentHome) {
     telegramState: path.join(agentHome, "telegram-state.json"),
     telegramOutbox: path.join(agentHome, "telegram-outbox.jsonl"),
     exchangeMessages: path.join(agentHome, "exchange-messages.jsonl"),
+    mailEvents: path.join(agentHome, "mail-events.jsonl"),
     exchangeClaims: path.join(agentHome, "exchange-claims.jsonl"),
     exchangeReplies: path.join(agentHome, "exchange-replies.jsonl"),
     exchangeNotifications: path.join(agentHome, "exchange-notifications.jsonl"),

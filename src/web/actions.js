@@ -1,3 +1,4 @@
+import { handleMailAction, isMailAction } from "./mail-actions.js";
 import { approveDispatch, rejectDispatch } from "../agent/dispatch.js";
 import { runCodexExchangeRunnerOnce } from "../agent/codex-exchange-runner.js";
 import { runExchangeRunnerOnce } from "../agent/exchange-runner.js";
@@ -15,6 +16,7 @@ const SESSION_FIELDS = new Set(["participants", "topic", "repo", "budgetMessages
 const SESSION_MESSAGE_FIELDS = new Set(["message"]);
 
 export async function handleWebAction({ agentHome, pathname, body, repoDir = process.cwd(), runnerNudge = requestManagedRunnerNudge }) {
+  if (isMailAction(pathname)) return handleMailAction({ agentHome, pathname, body });
   const route = actionRoute(pathname);
   if (!route) return { status: 404, value: { error: "not_found" } };
   if (route.confirm && body.confirm !== route.confirm) return { status: 400, value: { error: "confirmation_required" } };
@@ -77,7 +79,7 @@ export async function handleWebAction({ agentHome, pathname, body, repoDir = pro
 }
 
 export function isWebActionPath(pathname) {
-  return Boolean(actionRoute(pathname));
+  return isMailAction(pathname) || Boolean(actionRoute(pathname));
 }
 
 function actionRoute(pathname) {

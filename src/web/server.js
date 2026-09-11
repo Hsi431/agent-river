@@ -1,3 +1,5 @@
+import { listMailConversations, getMailConversation, mailAgents } from "../agent/mail.js";
+import { readMailDelivery } from "../agent/mail-delivery.js";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -115,6 +117,13 @@ async function handleRequest({ agentHome, actionSecurity, readOptions, request, 
 }
 
 function pageData(agentHome, readOptions, pathname) {
+  if (pathname === "/mail" || pathname === "/mail/new" || /^\/mail\/[A-Za-z0-9_-]+$/.test(pathname)) {
+    const threads = listMailConversations(agentHome);
+    const id = pathname.split("/")[2];
+    const current = id && id !== "new" ? getMailConversation(agentHome, id) : pathname === "/mail" ? threads[0] || null : null;
+    if (id && id !== "new" && !current) return null;
+    return { view: "mail", title: "Central post office", data: { threads, current, agents: mailAgents(agentHome), delivery: readMailDelivery(agentHome) } };
+  }
   if (pathname === "/") return { view: "dashboard", title: "Dashboard", data: readWebStatus(agentHome, readOptions) };
   if (pathname === "/compose") return {
     view: "compose",
@@ -142,6 +151,11 @@ function pageData(agentHome, readOptions, pathname) {
 
 function sendApi({ agentHome, readOptions, pathname, response }) {
   let data;
+  if (pathname === "/api/mail") return sendJson(response, 200, { conversations: listMailConversations(agentHome), agents: mailAgents(agentHome), delivery: readMailDelivery(agentHome) });
+  if (/^\/api\/mail\/[A-Za-z0-9_-]+$/.test(pathname)) {
+    const thread = getMailConversation(agentHome, pathname.split("/")[3]);
+    return sendJson(response, thread ? 200 : 404, thread || { error: "not_found" });
+  }
   if (pathname === "/api/status") data = readWebStatus(agentHome, readOptions);
   else if (pathname === "/api/request-options") data = {
     targets: listWebRequestTargets(agentHome),

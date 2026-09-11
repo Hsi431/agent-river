@@ -1,3 +1,5 @@
+import { submitMail, listMailConversations, getMailConversation, stopMail } from "./mail.js";
+import { startMailDelivery } from "./mail-delivery.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,7 +39,7 @@ export async function runAgentCli(argv) {
 
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
-  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-user-add", "direct-send-user-remove", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "port", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
+  validateValueOptions(args, ["agent", "budget-messages", "budget-minutes", "capabilities", "capability", "subject", "conversation", "channel", "chat-id", "codex-runner-model", "dashboard-chat-id", "days", "default-repo", "dir", "direct-send-user-add", "direct-send-user-remove", "exec", "exec-cwd", "exec-timeout-seconds", "exchange-notify-chat-id", "exchange-notify-enabled", "exchange-notify-max-per-cycle", "exchange-runner-daily-max", "exchange-runner-enabled", "exchange-runner-max-attempts", "exchange-runner-model", "exchange-runner-timeout-seconds", "from", "from-file", "id", "initiator", "interval-seconds", "kind", "lease-seconds", "long-poll-seconds", "max-cycles", "max-runtime-seconds", "memory-enabled", "memory-state", "name", "participants", "port", "repo", "request", "session", "settings", "sleep-seconds", "state", "style", "systemd-dir", "text", "thread", "to", "token-file", "tokens", "topic", "transport", "update-json", "user", "v2-enabled", "workspace-root", "write-access"]);
   if (args.help) {
     return printHelp();
   }
@@ -73,6 +75,17 @@ export async function runAgentCli(argv) {
       return printResult({ task: approveAgentTask({ agentHome, id: requireTaskId(args) }) });
     case "reject":
       return printResult({ task: rejectAgentTask({ agentHome, id: requireTaskId(args) }) });
+    case "mail-send":
+      requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "from"), tokenFile: args["token-file"] });
+      return printResult({ message: submitMail({ agentHome, from: args.from, to: args.to || "any",
+        text: resolveReplyText(args), subject: args.subject, repo: args.repo,
+        conversationId: args.conversation, capability: args.capability || "auto" }) });
+    case "mail-list":
+      return printResult({ conversations: listMailConversations(agentHome) });
+    case "mail-show":
+      return printResult({ conversation: getMailConversation(agentHome, requireArg(args, "id")) });
+    case "mail-stop":
+      return printResult(stopMail(agentHome, requireArg(args, "id")));
     case "exchange-submit":
       requirePollAgentTokenIfNeeded({ agentHome, name: requireArg(args, "from"), tokenFile: args["token-file"] });
       return printResult({
@@ -325,6 +338,8 @@ export async function runAgentCli(argv) {
       const repoDir = path.resolve(expandHome(args.repo || process.cwd()));
       const webPort = buildWebService({ agentHome, repoDir, port: args.port }).port;
       const server = await startWebServer({ agentHome, repoDir, port: webPort });
+      const stopDelivery = startMailDelivery({ agentHome, repoDir });
+      server.once("close", stopDelivery);
       const address = server.address();
       printResult({
         web: {
@@ -416,6 +431,10 @@ function printHelp() {
   run
   approve task_id
   reject task_id
+  mail-send --from agent --to any [--capability auto|review|coding|general] [--subject text] [--repo path] [--conversation mail_id] --text "..."
+  mail-list
+  mail-show --id mail_id
+  mail-stop --id mail_id
   exchange-submit --from human --to codex --text "..."
   session-open --initiator owner --participants codex,opus [--repo repo] [--budget-messages N] [--budget-minutes M] [--write-access codex] [--token-file path] [--no-kickoff] --topic "..."
   session-list
