@@ -2,7 +2,7 @@
 
 The Web GUI is an optional local control surface for Agent River. It presents the existing mailbox, dispatch, session, agent, safety, and completion state in a browser. Telegram remains supported, and the GUI does not add a database or a parallel workflow.
 
-The visual layout follows the dark navy and purple direction in `agentriver_gui.png`, but every displayed record and count comes from real Agent River state. The GUI does not create fake charts, metrics, health states, summaries, or placeholder records.
+The interface uses a riverbank palette: deep green surfaces, mist-white text, and a reed-green accent for navigation and actions. Correspondence flows through a conversation timeline, with delivery context alongside the reading pane. Amber marks queued work, blue-gray marks processing, and terracotta marks failures. Every displayed record and count comes from real Agent River state; the GUI does not create fake charts, metrics, health states, summaries, or placeholder records.
 
 For the design and source-of-truth mapping, see [WEB_GUI_ARCHITECTURE.md](WEB_GUI_ARCHITECTURE.md).
 

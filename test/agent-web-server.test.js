@@ -25,8 +25,8 @@ test("web server renders dashboard, assets, and restrictive security headers", a
   const asset = await request(server, "/assets/styles.css");
   assert.equal(asset.status, 200);
   assert.match(asset.headers["content-type"], /^text\/css/);
-  assert.match(asset.body, /--purple/);
-  assert.match(asset.body, /html\{scrollbar-gutter:stable\}/);
+  assert.match(asset.body, /--river-current/);
+  assert.match(asset.body, /html\s*\{\s*scrollbar-gutter:\s*stable;?\s*\}/);
 });
 
 test("web server exposes real inbox JSON and escaped HTML detail", async (t) => {
