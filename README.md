@@ -60,7 +60,7 @@ The steps below enable both Codex and Claude. If you only use one, omit the othe
 ### Install and configure
 
 ```sh
-git clone --branch feat/post-office https://github.com/Hsi431/agent-river.git
+git clone https://github.com/Hsi431/agent-river.git
 cd agent-river
 npm install
 
