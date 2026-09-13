@@ -19,7 +19,7 @@ Your agents keep their own tools, models, and login sessions. Agent River starts
 - **Connect existing agents.** Codex and Claude have built-in runners. Other agents can use a stdin/stdout adapter or poll the mailbox. Otter is one example of a separately connected agent, not a bundled dependency.
 - **Use Telegram when you want it.** The optional dashboard supports owner commands, bounded sessions, agent launches, and approval workflows alongside the web post office.
 
-Agent River is an early-stage project for a single trusted local operator. The web post office is the main starting point; Telegram is optional.
+Agent River 1.0 establishes the local post office and bounded group discussions as its core workflow for a single trusted local operator. The web post office is the main starting point; Telegram is optional. Incompatible changes to documented interfaces will be called out in release notes with migration guidance.
 
 ## How group discussion works
 

@@ -1,7 +1,7 @@
 {
   "name": "agent-river",
-  "version": "0.4.0",
-  "description": "Local approval-gated Codex/Telegram agent control plane.",
+  "version": "1.0.0",
+  "description": "A local post office for you and your AI agents.",
   "type": "module",
   "bin": {
     "codex-agent": "bin/codex-agent.js",

@@ -19,7 +19,7 @@
 - **接上既有 agent。** 內建 Codex 與 Claude runner；其他 agent 可透過 stdin/stdout adapter 或主動收信接入。Otter 是另外接入的例子，不是 repo 內建依賴。
 - **選用 Telegram。** 原有看板支援 owner 指令、有限預算的 session、agent 啟動與核准流程，可和網頁郵局並用。
 
-專案仍在早期階段，適合單一、可信任的本機操作者。建議從網頁郵局開始，Telegram 為選用功能。
+Agent River 1.0 確立以本機郵局與有限輪數群組討論為核心的工作流程，供單一、可信任的本機操作者使用。建議從網頁郵局開始，Telegram 為選用功能。未來若已記載的對外介面有不相容變更，會在版本說明中列出並提供遷移指引。
 
 ## 群組怎麼討論
 

@@ -2,6 +2,45 @@
 
 All notable changes to Agent River will be documented in this file.
 
+## v1.0.0 — 2026-09-13
+
+Agent River 1.0 establishes the local agent post office as the core workflow:
+one place for an owner, Codex, Claude, and connected agents to exchange letters
+and hold bounded group discussions.
+
+### Added
+- Local web post office with single-recipient letters, capability routing,
+  agent-to-agent delegation, follow-ups, and delivery tracking.
+- Group mail with shared context and automatic discussions of 1–3 rounds
+  (default 3). Each round waits for all successful replies; a new owner
+  instruction supersedes further rounds from the previous discussion.
+- Per-letter model and reasoning choices for single-recipient mail; group
+  recipients use their own runner configuration.
+- Local web control plane, request composer, live status refresh, and CLI/systemd
+  integration for running the post office without Telegram.
+- English and Traditional Chinese interfaces and onboarding documentation.
+
+### Changed
+- Compact conversation view shows group requests once, folds earlier messages
+  and delivery records, and keeps active or failed deliveries visible.
+- Riverbank visual theme, bilingual README rewrite, and repository cover art.
+- Version 1.0 establishes the documented interfaces as a compatibility baseline;
+  future incompatible changes will include release notes and migration guidance.
+
+### Fixed
+- Fenced agent-mail blocks with trailing newlines now parse consistently for
+  delivery and display instead of appearing as raw JSON without being sent.
+- Package lockfile version is synchronized with the release version.
+
+### Upgrade notes
+- The web post office is the primary entry point; Telegram remains optional.
+  Follow the README setup steps to enable runners and start the web service.
+- Existing Telegram sessions retain their separate message-budget workflow.
+- Existing group letters without round metadata remain manual and do not
+  automatically restart discussions after upgrade.
+- The supported deployment remains one trusted local operator. Provider CLIs
+  and external agent adapters still require their own installation and setup.
+
 ## v0.4.0 — 2026-07-06
 
 ### Added
