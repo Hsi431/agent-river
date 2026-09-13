@@ -12,7 +12,7 @@ import { DISPATCH_CHANNEL } from "../src/agent/dispatch.js";
 import { submitExchangeMessage } from "../src/agent/exchange.js";
 import { openSession } from "../src/agent/sessions.js";
 
-const REPO = "/home/fnata_claw/codex-memory-river";
+const REPO = "/home/user/projects/example-repo";
 
 // --- helpers ---
 

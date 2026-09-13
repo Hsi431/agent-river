@@ -1,6 +1,6 @@
 # Agent River v3 — Collab Session + 看板 + 握手接入(LOCKED SPEC)
 
-狀態:LOCKED(2026-07-05,fnata 口頭核准全包方向)。本檔是驗收契約;實作與本檔衝突時,以本檔為準,除非 fnata 另行改判。
+狀態:LOCKED(2026-07-05,owner 口頭核准全包方向)。本檔是驗收契約;實作與本檔衝突時,以本檔為準,除非 owner 另行改判。
 分工:規格/驗收/審查 = Fable(主對話);實作 = Codex(gpt-5.5,effort **high**,不用 xhigh)。
 分支:`v3-session`(自 `v2-phase1` HEAD `bf7c9dd` 切出——main 落後,最新 code 在 v2-phase1)。鐵律:**codex 可在分支 commit,絕不 push;絕不動 main**。
 
@@ -77,7 +77,7 @@ Session 欄位(鎖定):
 - `npm test` 全綠(既有 506 + 新增);新行為要有**真行為測試**(如真 spawn、真檔案 ledger),不准只有 assertion 式設定檢查。
 - 權限/安全邊界改動必附**行為探針測試**(實際 spawn 驗證被拒,not `allow.includes(...)`)。
 - codex self-report 不算數,Fable 讀真 diff 逐檔核 + 跑測試後才 commit gate 放行。
-- 不 push、不動 main、不自動部署 systemd 變更(unit 檔可產生,啟用等 fnata)。
+- 不 push、不動 main、不自動部署 systemd 變更(unit 檔可產生,啟用等 owner)。
 
 ## 6. Non-goals(v3 明確不做)
 

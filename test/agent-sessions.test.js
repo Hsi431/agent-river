@@ -12,7 +12,7 @@ import { closeSession, getSession, killSession, listActiveSessions, openSession 
 import { enableExchangeAgent, setTelegramCodexPolicy } from "../src/agent/safety.js";
 import { readJsonl } from "../src/lib/jsonl.js";
 
-const REPO = "/home/fnata_claw/codex-memory-river";
+const REPO = "/home/user/projects/example-repo";
 const SETTINGS_OK = path.join(os.tmpdir(), `u1-opus-runner-settings-${process.pid}.json`);
 fs.writeFileSync(SETTINGS_OK, "{}\n");
 

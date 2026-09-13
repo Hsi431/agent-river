@@ -278,7 +278,7 @@
 
 # Lead 裁決(Fable,2026-07-05)
 
-逐檔裁決如下。執行順序改為三步:**U4-pre(純新增,先做)→ owner cutover(fnata 手動)→ U4-A(刪除批,cutover 後才准跑)**。理由:live systemd 服務跑在本工作樹上,先刪 v1 檔案會讓舊 bridge 在任何重啟後 import 失敗進 crash loop;且同一 bot token 只允許一個 getUpdates 輪詢者,dashboard 必須先吸收 v2 路由,cutover 才不會殺掉 v2 launcher。
+逐檔裁決如下。執行順序改為三步:**U4-pre(純新增,先做)→ owner cutover(owner 手動)→ U4-A(刪除批,cutover 後才准跑)**。理由:live systemd 服務跑在本工作樹上,先刪 v1 檔案會讓舊 bridge 在任何重啟後 import 失敗進 crash loop;且同一 bot token 只允許一個 getUpdates 輪詢者,dashboard 必須先吸收 v2 路由,cutover 才不會殺掉 v2 launcher。
 
 ## U4-pre(新工單,純新增/改 dashboard 與 telegram.js 的呼叫點,不刪任何檔)
 1. dashboard bot 吸收 v2:owner 訊息以 `@` 開頭(非 `/` 指令)→ 轉交既有 `maybeHandleV2` 路徑(import telegram.js 的 v2 lane 或抽出的入口),行為與舊 bridge 一致(含 §9 start ack 與背景結果 outbox)。非 owner 照舊只回唯讀。
@@ -296,7 +296,7 @@
 - paths.js:對應模組亡後刪 key;`telegramState`/`telegramOutbox`/v2 keys 留。
 - README 兩份 + AGENT_TELEGRAM_POLLING.md:改寫,舊指令段落刪除,補 v3 看板運維段(含 cutover runbook)。
 
-## Cutover runbook(fnata 手動,兩分鐘)
+## Cutover runbook(owner 手動,兩分鐘)
 ```
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 cd ~/agent-river && node bin/codex-agent.js dashboard-service-write --dir ~/.config/systemd/user

@@ -87,17 +87,13 @@ node bin/codex-agent.js mail-stop --state ~/.codex/agent --id mail_...
 重啟時會補處理已保存的回覆，修復完成標記，並用 delivery key 避免重複送出結果。
 不宣稱 provider 執行具有 exactly-once 語義：若它已執行但回覆未落檔，仍受既有 runner 重試規則約束。
 
-## 本機試運轉（2026-09-11）
+## 本機部署與驗證
 
-- 程式：`/home/fnata_claw/agent-river-post-office`，分支 `feat/post-office`。
-- 狀態：`/home/fnata_claw/.local/state/agent-river-post-office`，與原 Telegram 狀態分開。
-- 實際往返：owner → Otter → Codex → Otter 整理結論，3 封信後結束。
-- 實際 GUI 寄信：選擇 review 自動分派，由 Claude 回覆完成。
-- 每個步驟的真實信件與回覆都可在 GUI 查看；測試用假資料不在此狀態目錄。
-- 常駐服務：`agent-river-post-office.service`，已啟用，與原 Telegram dashboard 分開。
-- 新服務啟動後，已從 GUI 對完成的對話追問，Otter 實際回覆「郵局追問已收到」。
-- 驗證：432/432 測試、no-memory 432/432、套件 dry-run 與 diff 格式檢查通過；
-  桌面 1600px 與手機 390px 實際瀏覽器檢查沒有橫向溢出。
+- 程式放在自行選擇的 checkout，例如 `~/projects/agent-river`。
+- 使用獨立狀態目錄，例如 `~/.local/state/agent-river`，將正式資料與測試資料分開。
+- 依 README 啟動網頁郵局；需要常駐執行時，可使用 CLI 產生 systemd user service。
+- 驗證單人寄信、依能力分派，以及完成對話後的追問；從 GUI 確認回覆與投遞狀態。
+- 需要驗證 agent 互相委派時，使用無敏感內容的測試主題；實際啟動 agent 會產生模型用量。
 
 ## 每封信指定模型與思考等級
 
@@ -120,16 +116,14 @@ Otter adapter 支援 `gpt-*` 與 `deepseek-*` 模型，並將 effort 傳給其 t
 模型選擇由寄件者依工作決定；不把實作、審查或一般協助永久綁到單一模型。
 轉信可換模型，回傳結果時沿用原求助者在該封信的模型與思考等級。
 
-## Otter 啟動逾時修正（2026-09-11）
+## 外部 adapter 啟動與工具能力
 
-實際啟動測得：30 秒時 RPC 尚未就緒，55 秒時才成功回覆 get_state。
-原 adapter 在 start 的 100ms 延遲後立刻 prompt，撞上內層 30 秒期限；外層 300 秒期限無法避免。
-Otter adapter 現在先用唯讀 get_state 確認就緒，逾時只重試狀態查詢，不重送 acceptance 未知的 prompt。
-整體啟動與回覆仍受 adapter 的 240 秒期限約束。郵件提示也補上主旨，讓「如主旨」有完整上下文。
-這個修正位於獨立的 `/home/fnata_claw/otter-agent/src/agent-river-exec-adapter.mjs`。
+外部 agent 的啟動時間可能超過單次 RPC 期限。Adapter 應先透過唯讀狀態查詢確認就緒，
+再送出請求，並為整體執行設定期限。逾時時只重試安全的狀態查詢；若尚未確認請求是否
+已被接受，不應直接重送，以免重複執行。
 
-修正後已重試原本的行程問題，Otter 正常回覆、沒有再被啟動逾時擋住。
-該路徑目前沒有註冊 Calendar 工具，回覆表示無法取得行程；這不代表已查到行程。
+Adapter 由外部 agent 的專案維護，不包含在此 repo。可用工具也取決於該 agent 的設定；
+郵件成功送達不代表收件者具備行事曆或其他外部服務的存取能力。
 
 ## Owner 群組討論
 

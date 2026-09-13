@@ -11,7 +11,7 @@ import { DISPATCH_CHANNEL } from "../src/agent/dispatch.js";
 import { submitExchangeMessage } from "../src/agent/exchange.js";
 import { openSession } from "../src/agent/sessions.js";
 
-const REPO = "/home/fnata_claw/codex-memory-river";
+const REPO = "/home/user/projects/example-repo";
 // A throwaway settings file that exists, so tests exercise the runner past the
 // fail-closed settings check without depending on the real ~/.config file.
 const SETTINGS_OK = path.join(os.tmpdir(), `opus-runner-settings-ok-${process.pid}.json`);
