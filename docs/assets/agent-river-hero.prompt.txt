@@ -1,0 +1,11 @@
+Generated with the built-in image_gen tool. This is an editorial illustration, not a product screenshot.
+
+Use case: illustration-story
+Asset type: wide GitHub repository README hero banner, landscape 2:1 composition.
+Primary request: a distinctive editorial illustration for "Agent River", a local central post office where a human exchanges letters with several AI agents and hosts bounded group discussions.
+Scene: a quiet dark riverbank at dusk, three narrow mint-green waterways flow together around a small beautifully designed central postal station; restrained ivory envelopes travel along the waterways. Suggest three different collaborators through three small abstract architectural workstations connected to the post office, not humanoid robots. Keep the scene uncluttered.
+Style: sophisticated handcrafted architectural paper-cut illustration, subtle fine paper grain, precise geometric construction, restrained depth, beautiful negative space, warm and calm, technical but welcoming.
+Palette: match the existing app: deep river green #101918, riverbank #15211f, soft mint #8dd9ba, ivory #e6eee8. A small muted brass accent is acceptable for the mail slot.
+Composition: a landscape banner with elegant clearly legible title on the left and the river/post-office illustration occupying the right two thirds. Keep all important elements comfortably inside the edges.
+Text (verbatim): "Agent River". Only this title. Large tasteful ivory typography, no other text.
+Constraints: no vendor logos, no trademark agent icons, no screenshots, no fake UI, no code, no neon cyberpunk, no floating dashboard cards, no watermarks. The illustration must communicate correspondence and several streams coming together.
