@@ -33,7 +33,8 @@ test("browser sends, follows up, reassigns and stops a conversation through real
   assert.match(detail, /&lt;script&gt;/);
   assert.match(html, /name="model"/);
   assert.match(html, /name="effort"/);
-  assert.match(detail, /opus · high/);
+  assert.match(detail, /postal-tag[^]*<b>opus<\/b>/);
+  assert.match(detail, /postal-tag[^]*<b>high<\/b>/);
   assert.equal(getMailConversation(home, conversationId).letters[0].mail.model, "opus");
   assert.doesNotMatch(detail, /<script>alert/);
   assert.equal((await post(`/api/mail/letters/${messageId}/reassign`, { target: "codex" })).status, 200);
@@ -45,4 +46,25 @@ test("browser sends, follows up, reassigns and stops a conversation through real
   assert.equal(api.status, "stopped");
   assert.equal((await fetch(`${origin}/api/mail`, { method: "POST", headers: { "content-type": "application/json" }, body: '{}' })).status, 403);
   assert.equal((await post("/api/mail", { from: "opus", request: "Impersonation" })).status, 409);
+  const groupResponse = await post("/api/mail", { targets: ["codex", "opus"], request: "兩位一起討論", subject: "群組測試" });
+  assert.equal(groupResponse.status, 201);
+  const group = await groupResponse.json();
+  assert.equal(group.messageIds.length, 2);
+  assert.equal(getMailConversation(home, group.conversationId).letters[0].mail.group.rounds, 3);
+  assert.deepEqual(group.targets, ["codex", "opus"]);
+  const groupPage = await (await fetch(`${origin}/mail/${group.conversationId}`)).text();
+  assert.match(groupPage, /name="targets"/);
+  assert.match(groupPage, /data-single-fields hidden disabled/);
+  assert.equal((await post(`/api/mail/${group.conversationId}/messages`, { targets: ["opus"], request: "請 Opus 補充" })).status, 201);
+  assert.equal((await post(`/api/mail/${group.conversationId}/messages`, { request: "再請全體回答" })).status, 201);
+  assert.equal(getMailConversation(home, group.conversationId).letters.length, 5);
+  assert.equal((await post("/api/mail", { targets: [], request: "沒有收件者" })).status, 409);
+  assert.equal((await post("/api/mail", { targets: ["codex", "opus"], request: "不混用模型", model: "gpt-5" })).status, 409);
+
+  assert.equal((await post("/api/mail", { targets: ["codex"], rounds: 4, request: "Too many" })).status, 409);
+  const oneRound = await post("/api/mail", { targets: ["opus"], rounds: "1", request: "One round" });
+  assert.equal(oneRound.status, 201);
+  const one = await oneRound.json();
+  assert.equal(getMailConversation(home, one.conversationId).letters[0].mail.group.rounds, 1);
+
 });

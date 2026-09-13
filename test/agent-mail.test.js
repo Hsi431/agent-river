@@ -6,7 +6,7 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { claimExchangeMessage, replyExchangeMessage } from "../src/agent/exchange.js";
-import { getMailConversation, listMailConversations, mailPrompt, reassignMail, reconcileMail, stopMail, submitMail } from "../src/agent/mail.js";
+import { getMailConversation, listMailConversations, mailPrompt, reassignMail, reconcileMail, stopMail, submitMail, submitGroupMail } from "../src/agent/mail.js";
 import { pickEligibleCodexMessage, runCodexExchangeRunnerOnce } from "../src/agent/codex-exchange-runner.js";
 import { pickEligibleMessage } from "../src/agent/exchange-runner.js";
 import { pickEligibleExecMessage, runExecRunnerOnce } from "../src/agent/exec-runner.js";
@@ -69,6 +69,29 @@ test("owner request delegates to peer, returns to original agent, and concludes"
   assert.equal(getMailConversation(home, original.thread_id).status, "completed");
   assert.equal(getMailConversation(home, original.thread_id).letters.length, 3);
   assert.equal(pickEligibleCodexMessage(home), null);
+});
+
+test("newline-terminated delegation reaches Codex and Claude and returns once", (t) => {
+  const home = setup(t);
+  const original = submitMail({ agentHome: home, from: "owner", to: "otter", text: "我想看你們三個互相自我介紹" });
+  answer(home, original, '```agent-mail\n{"to":"codex","text":"請介紹自己","capability":"general","model":"gpt-5","effort":"low"}\n```\n');
+  const codex = pickEligibleCodexMessage(home);
+  assert.ok(codex);
+  assert.equal(codex.mail.model, "gpt-5");
+  assert.equal(codex.mail.effort, "low");
+  assert.equal(getMailConversation(home, original.thread_id).status, "queued");
+  answer(home, codex, "我是 Codex，擅長程式實作。");
+  answer(home, pickEligibleExecMessage(home, "otter"), '接著請 Claude 介紹。\r\n```agent-mail\r\n{"to":"claude","text":"請介紹自己"}\r\n```\r\n \t\r\n');
+  const claude = pickEligibleMessage(home);
+  assert.equal(claude.to, "opus");
+  answer(home, claude, "我是 Claude，擅長審查。");
+  answer(home, pickEligibleExecMessage(home, "otter"), "我是 Otter，這是我們三位的介紹。");
+  reconcileMail(home);
+  reconcileMail(home);
+  const thread = getMailConversation(home, original.thread_id);
+  assert.equal(thread.status, "completed");
+  assert.equal(thread.letters.length, 5);
+  assert.equal(thread.timeline.filter((e) => e.type === "reply").length, 5);
 });
 
 test("automatic capability routing, Claude alias, and unknown recipients", (t) => {
@@ -214,4 +237,133 @@ test("mail choices reach Codex, Claude and exec invocation boundaries", async (t
   const envelope = JSON.parse(buildExecEnvelope({ agentHome: home, message: otter }));
   assert.equal(envelope.model, "gpt-5.6-sol");
   assert.equal(envelope.effort, "medium");
+});
+
+
+test("group mail fans out once, shares prior replies and waits for the owner", (t) => {
+  const home = setup(t);
+  const sent = submitGroupMail({ agentHome: home, rounds: 1, targets: ["codex", "claude", "otter", "opus"], text: "大家介紹自己" });
+  assert.equal(sent.length, 3);
+  assert.equal(new Set(sent.map(m => m.thread_id)).size, 1);
+  assert.equal(new Set(sent.map(m => m.mail.group.id)).size, 1);
+  assert.equal(pickEligibleCodexMessage(home).id, sent[0].id);
+  assert.equal(pickEligibleMessage(home).id, sent[1].id);
+  assert.equal(pickEligibleExecMessage(home, "otter").id, sent[2].id);
+  for (const m of sent) {
+    assert.match(mailPrompt(home, m), /owner-led group/);
+    answer(home, m, `${m.to} 的介紹`);
+  }
+  reconcileMail(home);
+  reconcileMail(home);
+  const thread = getMailConversation(home, sent[0].thread_id);
+  assert.equal(thread.status, "completed");
+  assert.equal(thread.letters.length, 3);
+  assert.deepEqual(thread.groupParticipants, ["codex", "opus", "otter"]);
+  const next = submitGroupMail({ agentHome: home, rounds: 1, conversationId: thread.id, targets: ["opus"], text: "請比較大家的觀點" });
+  const prompt = mailPrompt(home, next[0]);
+  assert.match(prompt, /codex 的介紹/);
+  assert.match(prompt, /opus 的介紹/);
+  assert.match(prompt, /otter 的介紹/);
+  answer(home, next[0], '```agent-mail\n{"to":"codex","text":"Do not forward"}\n```');
+  assert.equal(getMailConversation(home, thread.id).letters.length, 4);
+  assert.equal(pickEligibleCodexMessage(home), null);
+});
+
+test("group validation does not partially send; stopped groups cannot continue", (t) => {
+  const home = setup(t);
+  for (const targets of [[], ["codex", "absent"], ["any"], "codex", [null]]) {
+    assert.throws(() => submitGroupMail({ agentHome: home, rounds: 1, targets, text: "Hello" }));
+    assert.equal(listMailConversations(home).length, 0);
+  }
+  const [letter] = submitGroupMail({ agentHome: home, rounds: 1, targets: ["codex", "opus"], text: "Discuss" });
+  stopMail(home, letter.thread_id);
+  assert.equal(pickEligibleCodexMessage(home), null);
+  assert.equal(pickEligibleMessage(home), null);
+  assert.throws(() => submitGroupMail({ agentHome: home, rounds: 1, conversationId: letter.thread_id, targets: ["otter"], text: "Continue" }), /stopped/);
+});
+
+test("automatic group waits for all peers, shares every reply and stops at three rounds", (t) => {
+  const home = setup(t);
+  const first = submitGroupMail({ agentHome: home, targets: ["codex", "opus", "otter"], text: "討論方案" });
+  const id = first[0].thread_id;
+  for (let round = 1; round <= 3; round++) {
+    const batch = getMailConversation(home, id).letters.filter(m => m.mail.group.round === round);
+    assert.equal(batch.length, 3);
+    for (const m of batch) {
+      const prompt = mailPrompt(home, m);
+      assert.match(prompt, new RegExp(`Discussion round: ${round}/3`));
+      if (round > 1) for (const name of ["codex", "opus", "otter"]) assert.match(prompt, new RegExp(`${name} round ${round - 1}`));
+      if (round === 3) assert.match(prompt, /FINAL round/);
+    }
+    answer(home, batch[0], `codex round ${round}`);
+    answer(home, batch[1], `opus round ${round}`);
+    reconcileMail(home);
+    assert.equal(getMailConversation(home, id).letters.length, round * 3);
+    answer(home, batch[2], `otter round ${round}`);
+    reconcileMail(home);
+    reconcileMail(home);
+    assert.equal(getMailConversation(home, id).letters.length, Math.min(round + 1, 3) * 3);
+  }
+  assert.equal(getMailConversation(home, id).status, "completed");
+  assert.equal(pickEligibleCodexMessage(home), null);
+});
+
+test("reconciliation repairs a partial automatic fan-out without duplicate delivery", (t) => {
+  const home = setup(t);
+  const first = submitGroupMail({ agentHome: home, targets: ["codex", "opus", "otter"], text: "Recover", rounds: 2 });
+  for (const m of first) answer(home, m, `${m.to} result`);
+  const paths = agentPaths(home);
+  const rows = readJsonl(paths.exchangeMessages);
+  const preserved = rows.filter(m => m.mail.group.round === 1 || m.to === "codex");
+  fs.writeFileSync(paths.exchangeMessages, preserved.map(m => JSON.stringify(m)).join("\n") + "\n");
+  reconcileMail(home);
+  reconcileMail(home);
+  const second = getMailConversation(home, first[0].thread_id).letters.filter(m => m.mail.group.round === 2);
+  assert.equal(second.length, 3);
+  assert.equal(second.find(m => m.to === "codex").id, preserved.at(-1).id);
+  assert.equal(new Set(second.map(m => m.mail.group.context)).size, 1);
+});
+
+test("stops, blocked replies and invalid group replies prevent automatic rounds", (t) => {
+  for (const failure of ["stop", "blocked", "protocol"]) {
+    const home = setup(t);
+    const batch = submitGroupMail({ agentHome: home, targets: ["codex", "opus"], text: "Discuss", rounds: 3 });
+    answer(home, batch[0], "Ready");
+    if (failure === "stop") {
+      claimExchangeMessage({ agentHome: home, id: batch[1].id, agent: "opus" });
+      stopMail(home, batch[0].thread_id);
+      replyExchangeMessage({ agentHome: home, id: batch[1].id, agent: "opus", text: "Finished in flight" });
+    } else answer(home, batch[1], failure === "blocked" ? "Blocked: runner limit" : '```agent-mail\n{"to":"codex","text":"More work"}\n```');
+    reconcileMail(home);
+    assert.equal(getMailConversation(home, batch[0].thread_id).letters.length, 2);
+  }
+});
+
+test("new owner instruction supersedes the previous automatic discussion", (t) => {
+  const home = setup(t);
+  const old = submitGroupMail({ agentHome: home, targets: ["codex", "opus"], text: "Old topic" });
+  const next = submitGroupMail({ agentHome: home, conversationId: old[0].thread_id, targets: ["otter"], text: "New direction", rounds: 1 });
+  for (const m of old) answer(home, m, "Old result");
+  answer(home, next[0], "New result");
+  reconcileMail(home);
+  assert.equal(getMailConversation(home, old[0].thread_id).letters.length, 3);
+});
+
+test("invalid round budgets never dispatch", (t) => {
+  const home = setup(t);
+  for (const rounds of [0, 4, -1, 1.5, "3", null]) {
+    assert.throws(() => submitGroupMail({ agentHome: home, targets: ["codex"], text: "No", rounds }), /rounds/);
+  }
+  assert.equal(listMailConversations(home).length, 0);
+});
+
+test("automatic rounds retain reassigned recipients and reject duplicate peers", (t) => {
+  const home = setup(t);
+  const first = submitGroupMail({ agentHome: home, targets: ["codex", "opus"], text: "Discuss", rounds: 2 });
+  assert.throws(() => reassignMail({ agentHome: home, id: first[1].id, to: "codex" }), /already participates/);
+  const moved = reassignMail({ agentHome: home, id: first[1].id, to: "otter" });
+  answer(home, first[0], "Codex opinion");
+  answer(home, moved, "Otter opinion");
+  const second = getMailConversation(home, first[0].thread_id).letters.filter(m => m.mail.group.round === 2);
+  assert.deepEqual(second.map(m => m.to), ["codex", "otter"]);
 });

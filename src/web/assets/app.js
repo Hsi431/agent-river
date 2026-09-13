@@ -9,7 +9,7 @@ if (autoRefreshMs > 0) {
   document.addEventListener("input", markFormDirty);
   document.addEventListener("change", markFormDirty);
   window.setInterval(() => {
-    if (!formDirty && !focusedFormControl()) {
+    if (!formDirty && !focusedFormControl() && !document.querySelector(".postal-reader details[open]")) {
       if (document.body.classList?.contains("postal-page")) sessionStorage.setItem("postal-scroll", String(window.scrollY));
       window.location.reload();
     }
@@ -82,6 +82,8 @@ function formValues(form) {
     }
   }
   if (form.action.endsWith("/api/sessions") && !Object.hasOwn(values, "participants")) values.participants = [];
+  const group = form.querySelector("[data-group-fields]");
+  if (group && !group.disabled) values.targets = [...new FormData(form).getAll("targets")];
   return values;
 }
 
@@ -133,3 +135,14 @@ document.addEventListener("click", (event) => {
 });
 
 if (mailSearch) filterMail();
+
+document.addEventListener("change", (event) => {
+  const select = event.target;
+  if (!select.matches("[data-mail-mode]")) return;
+  const form = select.closest("form");
+  const group = select.value === "group";
+  const recipients = form.querySelector("[data-group-fields]");
+  const single = form.querySelector("[data-single-fields]");
+  recipients.hidden = recipients.disabled = !group;
+  single.hidden = single.disabled = group;
+});
